@@ -119,15 +119,63 @@ cp .env.example .env           # 키 없이 두면 mock 모드
 
 ## 서버 배포 (BlueRack VM)
 
-handoff 문서의 "FastAPI 올리는 절차"를 따른다. 이 레포 기준 차이점:
+배포 완료 (2026-11-03): **https://hack.220-66-233-75.nip.io** (`/health`, `/docs`, `/` 데모 페이지)
 
-- 서비스 파일: `deploy/hackathon.service` (진입점 `app.main:app`)
-- Caddy 블록: `deploy/Caddyfile.snippet` (SSE 용 `flush_interval -1` 포함)
-- 환경변수: `.env.example` 의 키를 `/etc/hackathon/hackathon.env` 에 작성
-  - SQLite: `DATABASE_URL=sqlite:////opt/hackathon/data/app.db`
-  - MinIO: `S3_ENDPOINT_URL=http://127.0.0.1:9000`, 키는 MinIO 에서 hackathon 전용 계정을 만들어 쓴다 (`billage` 버킷 건드리지 않음)
-- 서버 설치는 `requirements.txt` 만 (`requirements-dev.txt` 는 로컬·CI 용)
-- 갱신: `bash /opt/hackathon/app/deploy/update.sh`
+| 항목 | 위치 |
+|---|---|
+| 코드 | `/opt/hackathon/app` (실행 계정 `hackathon`) |
+| 가상환경 | `/opt/hackathon/venv` |
+| SQLite DB | `/opt/hackathon/data/app.db` (배포해도 유지됨, 자동 백업 없음) |
+| 환경변수 | `/etc/hackathon/hackathon.env` (root:hackathon 640) |
+| 서비스 | `systemctl status hackathon`, 로그 `sudo journalctl -u hackathon -f` |
+| Caddy | `/etc/caddy/Caddyfile` 끝의 `hack.` 블록, 접근 로그 `/var/log/caddy/hackathon.log` |
+
+### SSH 접속 준비 (한 번만)
+
+`~/.ssh/config` 에 추가하고 개인키를 `~/.ssh/` 에 둔다 (권한 600).
+
+```
+Host bluerack
+    HostName access2.bluerack.org
+    Port 31004
+    User ubuntu
+    IdentityFile ~/.ssh/<개인키 파일>
+    IdentitiesOnly yes
+```
+
+### 코드 갱신
+
+커밋한 뒤 로컬에서:
+
+```bash
+bash deploy/deploy.sh
+```
+
+커밋된 HEAD 를 서버로 보내 설치·재시작하고 health check 까지 한다. 실패하면 기존 코드가 남는다.
+(레포가 비공개이고 서버에 Deploy key 를 등록하지 않았으므로 서버에서 `git pull` 하지 않는다.)
+
+### 환경변수 변경 (API 키, CORS 등)
+
+```bash
+ssh bluerack
+sudo nano /etc/hackathon/hackathon.env
+sudo systemctl restart hackathon
+```
+
+### 주의
+
+- 서버 실제 RAM 은 3.3GiB 다 (handoff 문서의 7.3GB 아님). 워커 1개, `MemoryMax=600M`.
+- Caddy 를 고칠 때 `sudo caddy validate` 가 새 로그 파일을 root 소유로 만들면 reload 가 실패한다.
+  그때는 `sudo chown caddy:caddy /var/log/caddy/<파일>` 후 다시 `sudo systemctl reload caddy`.
+- Caddy 는 `restart` 가 아니라 `reload` (기존 Billage API 가 끊기지 않음).
+
+### 되돌리기
+
+```bash
+sudo systemctl disable --now hackathon
+sudo cp /etc/caddy/Caddyfile.bak /etc/caddy/Caddyfile && sudo systemctl reload caddy
+curl https://220-66-233-75.nip.io/actuator/health     # Billage 정상 확인
+```
 
 ## 제출 전 체크리스트 (공식 가이드 기준)
 
