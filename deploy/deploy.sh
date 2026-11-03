@@ -23,7 +23,7 @@ git archive --format=tar HEAD | ssh "$HOST" 'set -e
   sudo cp /opt/hackathon/app/deploy/hackathon.service /etc/systemd/system/hackathon.service
   sudo systemctl daemon-reload
   sudo systemctl restart hackathon
-  for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:8000/health && echo && exit 0; sleep 1; done
+  for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:8000/health 2>/dev/null && echo && exit 0; sleep 1; done
   echo "health check 실패. 로그: sudo journalctl -u hackathon -n 50" >&2
   exit 1'
 echo "배포 완료: https://hack.220-66-233-75.nip.io/health"
