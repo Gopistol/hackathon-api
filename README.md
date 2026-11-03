@@ -1,6 +1,6 @@
 # Hackathon API (FastAPI)
 
-BlueRack VM 의 Billage dev 서버 옆에 붙는 해커톤 백엔드.
+BlueRack VM 에서 동작하는 해커톤 백엔드. VM 의 인프라(Caddy, 80·443 포트, 메모리)를 다른 서비스와 공유한다.
 `https://hack.220-66-233-75.nip.io` → Caddy → `127.0.0.1:8000`.
 
 공식 샘플 레포([halla-ai/hackathon-sample-2026](https://github.com/halla-ai/hackathon-sample-2026))의
@@ -164,17 +164,18 @@ sudo systemctl restart hackathon
 
 ### 주의
 
-- 서버 실제 RAM 은 3.3GiB 다 (handoff 문서의 7.3GB 아님). 워커 1개, `MemoryMax=600M`.
+- 이 VM 은 다른 서비스와 공유한다. 다른 서비스가 쓰는 포트·Caddy 블록·DB·버킷·설정 파일은 건드리지 않는다.
+- 서버 RAM 은 3.3GiB 를 공유한다. 워커 1개, `MemoryMax=600M`.
 - Caddy 를 고칠 때 `sudo caddy validate` 가 새 로그 파일을 root 소유로 만들면 reload 가 실패한다.
   그때는 `sudo chown caddy:caddy /var/log/caddy/<파일>` 후 다시 `sudo systemctl reload caddy`.
-- Caddy 는 `restart` 가 아니라 `reload` (기존 Billage API 가 끊기지 않음).
+- Caddy 는 `restart` 가 아니라 `reload` (같은 VM 의 다른 사이트가 끊기지 않음).
 
 ### 되돌리기
 
 ```bash
 sudo systemctl disable --now hackathon
 sudo cp /etc/caddy/Caddyfile.bak /etc/caddy/Caddyfile && sudo systemctl reload caddy
-curl https://220-66-233-75.nip.io/actuator/health     # Billage 정상 확인
+systemctl is-active caddy                              # Caddy 정상 확인
 ```
 
 ## 제출 전 체크리스트 (공식 가이드 기준)

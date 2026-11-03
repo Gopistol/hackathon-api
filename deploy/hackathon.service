@@ -12,7 +12,7 @@ EnvironmentFile=/etc/hackathon/hackathon.env
 ExecStart=/opt/hackathon/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
 Restart=always
 RestartSec=3
-# 실제 RAM 3.3GiB (2026-11-03 확인). Spring·MySQL·MinIO 가 약 1.4GiB 를 쓰므로 워커 1개, 상한 600M.
+# VM RAM 3.3GiB 를 같은 VM 의 다른 서비스와 공유하므로 워커 1개, 상한 600M.
 MemoryMax=600M
 NoNewPrivileges=true
 
