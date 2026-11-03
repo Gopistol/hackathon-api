@@ -1,0 +1,20 @@
+# /etc/systemd/system/hackathon.service
+[Unit]
+Description=Hackathon FastAPI
+After=network.target docker.service
+
+[Service]
+User=hackathon
+Group=hackathon
+WorkingDirectory=/opt/hackathon/app
+EnvironmentFile=/etc/hackathon/hackathon.env
+# 127.0.0.1 에만 묶는다. 외부는 Caddy 를 거쳐서만 들어온다.
+ExecStart=/opt/hackathon/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=3
+# 실제 RAM 3.3GiB (2026-11-03 확인). Spring·MySQL·MinIO 가 약 1.4GiB 를 쓰므로 워커 1개, 상한 600M.
+MemoryMax=600M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

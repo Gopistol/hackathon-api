@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+# 실제 OpenAI 를 부르는 테스트는 기본 실행에서 뺀다. 실행: pytest -m live
+markers = ["live: 실제 OPENAI_API_KEY 로 OpenAI API 를 호출하는 테스트 (비용 발생)"]
+addopts = "-m 'not live'"

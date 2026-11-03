@@ -1,0 +1,15 @@
+# /etc/caddy/Caddyfile 끝에 추가. 기존 {$SITE_ADDRESS} 블록은 그대로 둔다.
+hack.220-66-233-75.nip.io {
+	encode gzip
+	# SSE 스트리밍이 모였다가 한 번에 나가지 않도록 즉시 flush
+	reverse_proxy 127.0.0.1:8000 {
+		flush_interval -1
+	}
+	log {
+		output file /var/log/caddy/hackathon.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
