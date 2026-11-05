@@ -10,3 +10,35 @@ tteokbokki.jpg | CC0 | Popo le Chien | https://commons.wikimedia.org/wiki/File:T
 sundae.jpg | CC0 | Popo le Chien | https://commons.wikimedia.org/wiki/File:Sundae.jpg
 kkwabaegi.jpg | CC BY 4.0 | 쪼끄미** | https://commons.wikimedia.org/wiki/File:Kkwabaegi.jpg
 hotteok.jpg | CC BY-SA 2.0 | Korea.net / Korean Culture and Information Service | https://commons.wikimedia.org/wiki/File:Hotteok.jpg
+
+메뉴 대표 사진 추가 (2026-11-06). 아래 사진은 실제 입점 가게 촬영본이 아닌 음식 참고 사진입니다.
+원본 파일을 변경하지 않았습니다. 화면에서만 object-fit으로 표시합니다.
+
+oil-tteokbokki.jpg — 간장·고추장 기름떡볶이가 함께 담긴 접시
+Korea.net / Korean Culture and Information Service (Jeon Han), CC BY-SA 2.0
+https://commons.wikimedia.org/wiki/File:Korea_Tongin_Market_03_(12920678333).jpg
+https://creativecommons.org/licenses/by-sa/2.0/
+
+eomuk.jpg — 영숙이네집, CC BY 4.0
+https://commons.wikimedia.org/wiki/File:Eomuk.jpg
+https://creativecommons.org/licenses/by/4.0/
+
+chapssal-doughnuts.jpg — Yskin, CC BY 4.0
+https://commons.wikimedia.org/wiki/File:Chapssal-doughnuts.jpg
+https://creativecommons.org/licenses/by/4.0/
+
+sikhye.jpg — 뚱표아빠의 세상사는 이야기, CC BY 4.0
+https://commons.wikimedia.org/wiki/File:Sikhye.jpg
+https://creativecommons.org/licenses/by/4.0/
+
+twigim.jpg — anokarina, CC BY-SA 2.0
+https://commons.wikimedia.org/wiki/File:Twigim.jpg
+https://creativecommons.org/licenses/by-sa/2.0/
+
+bindaetteok.jpg — Korean Culture and Information Service, KOGL Type 1
+https://commons.wikimedia.org/wiki/File:Bindae-tteok.jpg
+https://www.kogl.or.kr/info/licenseType1.do
+
+wanja.jpg — Chloe Lim, CC BY 2.0
+https://commons.wikimedia.org/wiki/File:Donggeurang-ttaeng.jpg
+https://creativecommons.org/licenses/by/2.0/
