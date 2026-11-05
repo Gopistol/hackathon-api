@@ -221,7 +221,8 @@ Input JSON: "store" (shop facts) and "sentences": [{"id": n, "question": what th
 
 Return ONLY a JSON object, no markdown: {"ids": [sentence ids in the order they should be read]}
 Rules:
-- Pick 3 to 6 sentences, about 90 to 170 Korean characters in total (about 25 seconds).
+- The video is 30 seconds: pick 4 to 8 texts, 180 to 230 Korean characters in total. Use most of what they said;
+  do not summarize down to a few lines.
 - Order them as one story: how it began → the market/neighborhood in the old days or what they kept all these years →
   one memorable moment or person → a word to visitors (put an invitation last if there is one).
 - Every picked text must make sense right after the one before it. If a text depends on something not picked
