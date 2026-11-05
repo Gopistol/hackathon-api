@@ -26,7 +26,7 @@ from app.prompts import (
     REGISTER_INTERVIEW_PROMPT,
     STORY_BEATS,
     STORY_INTERVIEW_PROMPT,
-    STORY_NARRATION_PROMPT,
+    STORY_PICK_PROMPT,
 )
 from app.services import ai, onboarding, tts
 from app.services.i18n import PAYMENTS, PAYMENT_KO
@@ -44,7 +44,6 @@ TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가
 TURN_MAX_TOKENS = 500  # 바뀐 항목, 다듬은 답, 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
 HISTORY = 12  # 지난 질문·답을 전부 넘겨 맥락을 잃지 않게 한다 (최대 턴 수 이상)
-QUOTE_CHARS = (40, 170)  # 원문 구간 글자 수 (짧으면 짧은 답도 더하고, 길면 자른다)
 
 _STOP_RE = re.compile(r"그만\s*(할게|하자|해요|합시다|하고)|그게\s*다(예요|에요|야|입니다)|이제\s*됐|다\s*했어|끝낼게")
 
@@ -134,7 +133,7 @@ def _history(iv: Interview) -> list[dict]:
 
 
 def _clean_heard(value, turn: dict) -> str | None:
-    """LLM 이 다듬은 사장님 말을 검사한다. 하지 않은 숫자가 생겼거나 원래 말과 너무 다르면 버린다."""
+    """LLM 이 다듬은 사장님 말을 검사한다. 하지 않은 숫자·금액·낱말이 생겼으면 버린다 (인식된 그대로 보여 준다)."""
     text = " ".join(str(value or "").split())[:300]
     sources = [x for x in (turn["transcript"], turn.get("alt")) if x]
     if not text or not _numbers_ok(text, *sources):
@@ -142,8 +141,10 @@ def _clean_heard(value, turn: dict) -> str | None:
     prices = lambda t: {ai._price(m) for m in ai._PRICE_RE.finditer(t)} - {None}  # noqa: E731
     if not prices(text) <= set().union(*(prices(x) for x in sources)):
         return None  # "두 개 천 원" → "두 개 2천 원" 처럼 금액이 바뀌었다
-    close = max(difflib.SequenceMatcher(None, _compact(text), _compact(x), autojunk=False).ratio() for x in sources)
-    return text if close >= 0.35 else None
+    corpus = _compact(" ".join(sources))
+    words = [w for w in re.findall(r"[가-힣A-Za-z0-9]+", text) if len(w) >= 2]
+    kept = sum(1 for w in words if w[:2] in corpus or _near(w, corpus))  # "떡뽀끼"→"떡볶이" 같은 인식 오류 고침은 허용
+    return text if kept == len(words) else None  # 사장님이 하지 않은 낱말이 하나라도 들어가면 버린다
 
 
 def _progress(iv: Interview) -> int:
@@ -232,6 +233,31 @@ def start(db: Session, llm: LLMProvider, kind: str, store_id: int | None, market
 
 def _compact(text: str) -> str:
     return re.sub(r"[\s.,!?~·'\"]+", "", text or "")
+
+
+# 질문을 비교할 때 빼는 묻는 말투 (앞 두 글자)
+_ASK_WORDS = {"그때", "그럼", "혹시", "어땠", "어떤", "어떻", "어떠", "어디", "언제", "무엇", "뭐예", "뭔가", "말씀", "해주", "주세",
+              "들려", "이야", "얘기", "좀더", "하신", "하셨", "있으", "있었", "계세", "그런", "그러", "지금", "처음"}
+# "길바닥이 더러웠다고 하셨는데," 처럼 사장님 답을 다시 읊는 앞부분
+_PARROT_RE = re.compile(r"^[^?!]*?(라고|다고|었다고|였다고)?\s*(하셨는데|하셨다니|하셨군요|하셨네요|셨는데|셨다니|셨군요|이시군요|이군요|군요)[.,!~\s]*")
+
+
+def _speak_fresh(say: str | None, iv: Interview) -> str | None:
+    """AI 가 할 말에서 사장님 답을 되풀이하는 앞부분을 빼고, 앞에서 한 질문과 비슷하면 None (다시 묻지 않게)."""
+    if not say:
+        return None
+    say = _PARROT_RE.sub("", say).strip() or say
+    def keys(text: str) -> set[str]:  # 질문 부분의 핵심 낱말 (앞 두 글자). 시장 이름·묻는 말투는 뺀다
+        question = re.split(r"[.!?,]\s*", text.strip(" .!?"))[-1]
+        words = re.findall(r"[가-힣]{2,}", question)
+        return {w[:2] for w in words if "시장" not in w} - _ASK_WORDS
+
+    new = keys(say)
+    for q in (t["question"] for t in iv.turns if t.get("question")):
+        old = keys(q)
+        if new and old and len(new & old) / min(len(new), len(old)) >= 0.6:
+            return None  # 말만 바꾼 같은 질문 ("골목은 어땠나요?" → "골목은 어땠는지 좀 더 말씀해 주세요")
+    return say
 
 
 def _keep_clean(iv: Interview, value) -> None:
@@ -550,6 +576,7 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
         new = _rule_update(draft, asking, transcript)
     else:
         new = _ground(new, draft, iv, transcript, needs)
+        say = _speak_fresh(say, iv)
         if say and not _numbers_ok(say, " ".join(t["transcript"] for t in iv.turns), json.dumps(new, ensure_ascii=False)):
             say = None  # 지어낸 숫자가 들어간 말은 버리고 아래 고정 질문으로
 
@@ -705,6 +732,15 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             _keep_clean(iv, data.get("heard"))
             if say and not _numbers_ok(say, " ".join(t["transcript"] for t in iv.turns), json.dumps(payload["store"], ensure_ascii=False)):
                 say = None
+            fresh = _speak_fresh(say, iv)
+            if say and not fresh:
+                # 이미 한 질문을 또 하려 했다 = 그 축은 답을 들었다. 다음 축으로 넘어간다
+                prev = st.get("asking", "")
+                if prev in STORY_BEATS:
+                    asked[prev] = MAX_ASK_PER_BEAT
+                    if len(transcript) >= 8 and prev not in covered:
+                        covered.append(prev)
+            say = fresh
         except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
             logger.warning("이야기 인터뷰 LLM 실패, 고정 질문으로 이어 갑니다: %s", type(e).__name__)
     if not used_llm:
@@ -712,6 +748,12 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             covered.append(asking)
         anecdote = anecdote or len(transcript) >= 30
 
+    if st.get("asking") == "message" and len(transcript) >= 8:
+        # 마지막 질문(손님께 한마디)에 답했으면 더 묻지 않고 마친다
+        covered = list(dict.fromkeys([*covered, "message"]))
+        if len(iv.turns) >= MIN_STORY_TURNS:
+            iv.state = {**st, "covered": covered, "anecdote": anecdote, "asking": "message", "asked": asked}
+            return "", True
     # 사장님 이야기(origin)와 시장·동네 이야기(years)는 꼭 듣고, 한 축 더 + 구체적인 일화 하나
     # (두 번 물어도 안 나오면 억지로 붙잡지 않는다)
     must = all(b in covered or asked.get(b, 0) >= MAX_ASK_PER_BEAT for b in ("origin", "years"))
@@ -731,73 +773,69 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
 _FILLER_ONLY = re.compile(r"^(네|예|응|음+|어+|아+|그렇죠|맞아요|글쎄요|몰라요|없어요)[.!?~\s]*$")
 
 
-def _head(text: str, limit: int) -> str:
-    """앞에서부터 limit 글자 안쪽, 낱말 경계에서 자른 원문 구간."""
-    return text if len(text) <= limit else (text[:limit].rsplit(" ", 1)[0] or text[:limit])
+STORY_CHARS = 170  # 약 30초. 넘으면 문장 단위로 뺀다 (문장 중간을 자르지 않는다)
+_SENTENCE_RE = re.compile(r"(?<=[.!?~])\s+")
 
 
-def _rule_quotes(turns: list[dict]) -> list[dict]:
-    """LLM 없이: 답마다 첫 문장을 골라 30초 분량까지. 이야기가 짧으면 짧은 답이라도 쓴다."""
-    quotes, total = [], 0
+ANSWER_UNIT = 90  # 답이 이보다 길면 문장으로 나눠 고른다. 짧은 답은 통째로 (앞뒤 맥락이 끊기지 않게)
+
+
+def _story_sentences(turns: list[dict]) -> list[dict]:
+    """고를 단위: 답 하나 통째로 (다듬은 글이 있으면 그것). 긴 답만 문장으로 나눈다. 맞장구만 한 답은 뺀다."""
+    out = []
     for i, t in enumerate(turns):
-        sentence = next((s for s in re.split(r"(?<=[.!?。])\s+", t["transcript"]) if len(s) >= 8), "")
-        sentence = _head(sentence, QUOTE_CHARS[1] - total)
-        if len(sentence) < 8:
-            continue
-        quotes.append({"turn": i, "text": sentence})
-        total += len(sentence)
-    if total >= QUOTE_CHARS[0]:
-        return quotes
-    # 이야기가 거의 없을 때: 맞장구만 한 답을 빼고 짧은 답도 그대로 이어 붙인다
-    used = {q["turn"] for q in quotes}
-    for i, t in enumerate(turns):
-        said = t["transcript"].strip()
-        if i in used or len(said) < 2 or _FILLER_ONLY.match(said):
-            continue
-        said = _head(said, QUOTE_CHARS[1] - total)
-        if said:
-            quotes.append({"turn": i, "text": said})
-            total += len(said)
-    return sorted(quotes, key=lambda q: q["turn"])
+        said = " ".join(_said(t).split())
+        parts = _SENTENCE_RE.split(said) if len(said) > ANSWER_UNIT else [said]
+        for part in (x.strip() for x in parts):
+            if len(part) >= 4 and not _FILLER_ONLY.match(part):
+                out.append({"id": len(out), "turn": i, "text": part if part[-1] in ".!?~" else f"{part}."})
+    return out
 
 
-NARRATION_CHARS = (40, 230)
+def _fit(picked: list[dict]) -> list[dict]:
+    """30초 안으로: 첫 문장과 마지막 문장(손님께 한마디)은 두고 가운데 긴 문장부터 통째로 뺀다."""
+    picked = list(picked)
+    while len(picked) > 2 and sum(len(x["text"]) for x in picked) > STORY_CHARS:
+        picked.remove(max(picked[1:-1], key=lambda x: len(x["text"])))
+    return picked
 
 
-async def _narration(db: Session, llm: LLMProvider, iv: Interview) -> str | None:
-    """인터뷰 전체를 읽고 흐름이 있는 1인칭 이야기를 쓴다. 사장님이 하지 않은 숫자가 있거나 형식이 틀리면 None."""
+def _rule_story(sentences: list[dict]) -> list[dict]:
+    """LLM 없이: 답마다 첫 문장을 말한 순서대로."""
+    seen: set[int] = set()
+    firsts = [x for x in sentences if not (x["turn"] in seen or seen.add(x["turn"]))]
+    return _fit(firsts)
+
+
+async def _pick_story(db: Session, llm: LLMProvider, iv: Interview, sentences: list[dict]) -> list[dict] | None:
+    """AI 는 사장님이 한 문장 중에서 고르고 이야기 순서로 놓기만 한다. 글은 원래 문장 그대로 쓴다 (하지 않은 말이 들어갈 수 없다)."""
     payload = {
         "store": _store_facts(db, iv),
-        "turns": [{"turn": i, "question": t["question"], "text": _said(t)} for i, t in enumerate(iv.turns)],
+        "sentences": [{"id": x["id"], "question": iv.turns[x["turn"]]["question"], "text": x["text"]} for x in sentences],
     }
     try:
         data = await asyncio.wait_for(
-            ai.complete_json(llm, STORY_NARRATION_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
+            ai.complete_json(llm, STORY_PICK_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
             COMPOSE_BUDGET,
         )
-        lines = [" ".join(str(x).split()) for x in data.get("lines") or [] if str(x).strip()]
+        ids = [int(x) for x in data.get("ids") or []]
     except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
-        logger.warning("이야기 대본 쓰기 실패, 원문 구간으로 대체: %s", type(e).__name__)
+        logger.warning("이야기 문장 고르기 실패, 답마다 첫 문장으로 대체: %s", type(e).__name__)
         return None
-    text = " ".join(x if x[-1] in ".!?~" else f"{x}." for x in lines)
-    said = " ".join(f"{t['transcript']} {t.get('alt') or ''} {t.get('clean') or ''}" for t in iv.turns)
-    if not NARRATION_CHARS[0] <= len(text) <= NARRATION_CHARS[1] or not _numbers_ok(text, said, json.dumps(payload["store"], ensure_ascii=False)):
-        logger.warning("이야기 대본이 길이·숫자 검사에 걸려 원문 구간으로 대체합니다")
-        return None
-    return text
+    by_id = {x["id"]: x for x in sentences}
+    picked = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]
+    return _fit(picked) if len(picked) >= 2 else None
 
 
 async def compose(db: Session, llm: LLMProvider, iv: Interview) -> dict:
-    """영상에 쓸 이야기를 만든다. 이미 만들었으면 그대로 돌려준다.
-
-    narration: AI 가 인터뷰 전체로 쓴 흐름 있는 이야기 (시장 할머니 목소리로 읽는다).
-    quotes: 원문 구간. narration 을 못 만들면 이걸 사장님 원래 목소리로 이어 붙인다."""
+    """영상 이야기: 사장님이 한 문장만 골라 이야기 순서로 잇는다 (시장 할머니 목소리로 읽는다). 이미 만들었으면 그대로."""
     if iv.result.get("quotes") is not None:
         return iv.result
-    quotes = _rule_quotes(iv.turns)
-    narration = await _narration(db, llm, iv) if quotes and not ai.is_mock(llm) else None
-    script = narration or " ".join(q["text"] if q["text"][-1] in ".!?~" else f"{q['text']}." for q in quotes)
-    iv.result = {**iv.result, "quotes": quotes, "narration": narration, "script_ko": script}
+    sentences = _story_sentences(iv.turns)
+    picked = (await _pick_story(db, llm, iv, sentences) if sentences and not ai.is_mock(llm) else None) or _rule_story(sentences)
+    script = " ".join(x["text"] for x in picked)
+    quotes = [{"turn": x["turn"], "text": x["text"]} for x in picked]
+    iv.result = {**iv.result, "quotes": quotes, "narration": script or None, "script_ko": script}
     store = db.get(Store, iv.store_id)
     if script and store:
         store.story_ko = script  # 가게 페이지 '사장님 이야기'

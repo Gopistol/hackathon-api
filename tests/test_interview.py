@@ -109,7 +109,7 @@ def test_llm_cannot_finish_before_required_fields(client) -> None:
     finally:
         app.dependency_overrides.pop(get_llm)
     assert out["draft"]["store_name"] == "영천 떡집" and out["draft"]["category"] == "떡·한과"
-    assert out["say_ko"].startswith("떡집이군요")
+    assert out["say_ko"] == "대표 상품이랑 가격을 알려 주세요."  # "떡집이군요." 같은 되풀이는 뺀다
 
 
 def _story_turns(client, store_id: int = 2) -> int:
@@ -119,26 +119,23 @@ def _story_turns(client, store_id: int = 2) -> int:
     return iid
 
 
-def test_narration_with_invented_facts_falls_back_to_quotes(client) -> None:
+def test_story_uses_only_sentences_the_merchant_said(client) -> None:
     iid = _story_turns(client)
-    made_up = {"lines": ["1970년에 시작한 우리 가게는요.", "대통령상도 받았어요.", "남편이랑 이 자리에서 꽈배기를 팔았어요.", "놀러 오세요."]}
-    fake = FakeLLM([made_up])
+    # 문장을 새로 쓰려 해도 받지 않는다 (ids 가 없으면 답마다 첫 문장)
+    fake = FakeLLM([{"lines": ["1970년에 시작했어요.", "대통령상도 받았어요."]}])
     app.dependency_overrides[get_llm] = lambda: fake
     try:
         client.post(f"{BASE}/{iid}/finish")
     finally:
         app.dependency_overrides.pop(get_llm)
-    detail = client.get(f"{BASE}/{iid}").json()
-    assert "1970" not in detail["script_ko"] and "대통령상" not in detail["script_ko"]
-    assert "남편이랑 이 자리에서" in detail["script_ko"]  # 원문 구간으로 대신
-    assert detail["quotes"]
+    script = client.get(f"{BASE}/{iid}").json()["script_ko"]
+    assert script == "30년 전에 남편이랑 이 자리에서 시작했어요. 처음엔 꽈배기만 팔았죠. 매일 새벽 네 시에 반죽을 해요."
 
 
-def test_narration_tells_one_story_and_becomes_the_video(client) -> None:
+def test_story_picks_and_orders_whole_sentences_for_the_video(client) -> None:
     iid = _story_turns(client, store_id=1)
-    story = {"lines": ["30년 전에 남편이랑 이 자리에서 시작했어요.", "처음엔 꽈배기만 팔았지요.",
-                       "지금도 매일 새벽 네 시에 반죽을 해요.", "따뜻할 때 꼭 드시고 가세요."]}  # fmt: skip
-    fake = FakeLLM([story])
+    # 짧은 답은 통째로 고른다: 0 "30년 전에…팔았죠." 1 "매일 새벽 네 시에 반죽을 해요."
+    fake = FakeLLM([{"ids": [1, 0, 99]}])  # 없는 번호는 무시한다
     app.dependency_overrides[get_llm] = lambda: fake
     try:
         client.post(f"{BASE}/{iid}/finish")
@@ -150,11 +147,21 @@ def test_narration_tells_one_story_and_becomes_the_video(client) -> None:
     finally:
         app.dependency_overrides.pop(get_llm)
     detail = client.get(f"{BASE}/{iid}").json()
-    assert detail["script_ko"].startswith("30년 전에 남편이랑")
+    assert detail["script_ko"] == "매일 새벽 네 시에 반죽을 해요. 30년 전에 남편이랑 이 자리에서 시작했어요. 처음엔 꽈배기만 팔았죠."
     job = client.get(f"/api/v1/merchant/videos/jobs/{r.json()['job_id']}").json()
     assert job["status"] == "done", job
     video = client.get(f"/api/v1/videos/{job['video_id']}").json()
-    assert video["script_source"] == "interview" and video["script_ko"][0].startswith("30년 전에")
+    assert video["script_source"] == "interview" and video["script_ko"][0].startswith("매일 새벽")
+
+
+def test_long_story_drops_whole_sentences_not_halves() -> None:
+    from app.services.interview import STORY_CHARS, _fit
+
+    picked = [{"id": i, "turn": i, "text": f"{i}번째 문장은 이렇게 꽤 길게 이어지는 사장님의 이야기예요."} for i in range(8)]
+    out = _fit(picked)
+    assert sum(len(x["text"]) for x in out) <= STORY_CHARS
+    assert out[0]["id"] == 0 and out[-1]["id"] == 7  # 첫 문장과 마지막 한마디는 남긴다
+    assert all(x in picked for x in out)  # 문장 중간을 자르지 않는다
 
 
 def test_find_span() -> None:
@@ -170,7 +177,7 @@ def test_video_from_thin_story_still_renders(client) -> None:
     client.post(f"{BASE}/{iid}/turns", data={"text": "그냥 열심히 했죠"})
     video = _make(client, [("photos", ("0.jpg", _jpeg("blue"), "image/jpeg"))], {"interview_id": str(iid)})
     detail = client.get(f"{BASE}/{iid}").json()
-    assert detail["status"] == "done" and detail["quotes"] == [{"turn": 1, "text": "그냥 열심히 했죠"}]
+    assert detail["status"] == "done" and detail["quotes"] == [{"turn": 1, "text": "그냥 열심히 했죠."}]
     assert video["script_source"] == "interview"
 
 

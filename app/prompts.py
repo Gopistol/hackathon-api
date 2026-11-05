@@ -89,7 +89,8 @@ _PROFILE_TEXT = "\n".join(
 
 _SPOKEN_RULES = """
 "say" is read aloud by text-to-speech to an elderly merchant on what feels like a phone call:
-- ONE short spoken Korean utterance, at most ~50 characters: an optional echo of ONE key word (a few characters) + exactly ONE question.
+- ONE short spoken Korean utterance, at most ~50 characters: exactly ONE new question, optionally after ONE key word
+  they said ("리어카요?"). Never paraphrase or summarize their answer back ("~라고 하셨는데", "~하셨다니", "~하셨군요").
 - Do NOT start with 네/아/음/그러시구나 and do not thank or praise them each turn; get to the question.
 - Do not read back everything they said and do not ask confirmation questions ("맞죠?", "맞으세요?", "~하신 거죠?").
   Anything uncertain goes to needs_check; the merchant checks it on the summary screen. Just move on to the next question.
@@ -119,10 +120,10 @@ Return ONLY a JSON object, no markdown:
    "payment": ["cash"|"card"|"foreign_card"|"onnuri"], "hours": str, "extras": {{"짧은 항목명": "값"}}}},
  "needs_check": ["짧은 한국어 메모"]}}
 
-"heard": the merchant's latest answer rewritten as clean, complete Korean sentences for the screen. Fix obvious
-speech-to-text errors using the question, the conversation and "answer_alt"; drop fillers (음, 어, 그러니까) and
-repetitions; keep their meaning, their own words and speaking style (반말/존댓말 as they spoke). Never add facts,
-numbers, names or details that were not said. If the answer is already clean, copy it.
+"heard": the merchant's latest answer for the screen, as close to their words as possible. Only (1) delete fillers
+(음, 어, 그러니까, 그) and stutters/repetitions, (2) fix words clearly misrecognized by speech-to-text, using the
+question, the conversation and "answer_alt", and (3) add punctuation to split sentences. Do NOT add any other words,
+do not rephrase or complete their sentences, and keep 반말/존댓말 exactly as they spoke.
 
 Rules for "updates":
 - Output ONLY fields that this answer adds or changes; omit everything else (use {{}} if nothing changed). Keep it short.
@@ -182,10 +183,10 @@ Story beats: {json.dumps(STORY_BEATS, ensure_ascii=False)}
 Return ONLY a JSON object, no markdown:
 {{"heard": str, "covered": [beats the merchant has really talked about so far],
  "anecdote": bool (a concrete moment, person or detail was told), "asking": beat of your next question, "finish": bool, "say": str}}
-"heard": the merchant's latest answer rewritten as clean, complete Korean sentences for the screen. Fix obvious
-speech-to-text errors using the question, the conversation and "answer_alt"; drop fillers (음, 어, 그러니까) and
-repetitions; keep their meaning, their own words and speaking style (반말/존댓말 as they spoke). Never add facts,
-numbers, names or details that were not said. If the answer is already clean, copy it.
+"heard": the merchant's latest answer for the screen, as close to their words as possible. Only (1) delete fillers
+(음, 어, 그러니까, 그) and stutters/repetitions, (2) fix words clearly misrecognized by speech-to-text, using the
+question, the conversation and "answer_alt", and (3) add punctuation to split sentences. Do NOT add any other words,
+do not rephrase or complete their sentences, and keep 반말/존댓말 exactly as they spoke.
 
 How to interview:
 - Ask open questions about ONE concrete moment ("그때 기억나는 손님 한 분만 얘기해 주세요"), not yes/no questions.
@@ -197,11 +198,13 @@ How to interview:
   area, holidays and market days, how the neighborhood changed. Use the market name from "store"
   ("영천시장 처음 오셨을 때요?"). Do not mention landmarks or history the merchant has not brought up.
 - Ask in plain, short spoken words an 80-year-old understands. No abstract words (가치, 의미, 철학, 정체성).
-- If an answer is short, ask the same beat once more from another angle; if still short, move to the next beat.
+- If an answer is short, you may ask ONE follow-up on the same beat, but about something new in it (a person, a day,
+  how they got through it) — never the same question in other words. If they answered it, move to the next beat.
+- Never ask anything that is already answered in "history" or "answer".
 - Never put words in their mouth or invent facts. Use "store" facts only as background; do not claim anything
   about the merchant's life that they did not say. Do not dig into family trouble, health or money even if mentioned.
 - "covered" lists only beats the merchant really talked about in "history" or "answer" (keep earlier ones).
-- Keep empathy short and sincere. Usually just repeat one key word they said ("리어카로요.").
+- Keep empathy short and sincere. At most one key word they said ("리어카로요."), never a summary of their answer.
   Do not praise ("대단해요", "감동이에요", "정성이 느껴져요") more than once in the whole interview.
 - Do not ask about a beat again after the merchant skipped it or answered something else; follow what they said.
 - You do not need every beat, but try to cover origin and years (the market/neighborhood) and get at least one
@@ -211,22 +214,18 @@ How to interview:
 {_SPOKEN_RULES}
 """.strip()
 
-STORY_NARRATION_PROMPT = """
-You write the narration of a 20-30 second vertical video about a traditional-market merchant in Seodaemun-gu, Seoul,
-for foreign visitors. It is read aloud in Korean by a warm elderly market woman's voice, in the FIRST PERSON as the
-merchant ("저는 ...", "우리 가게는 ..."), and then dubbed into other languages.
-Input JSON: "store" (shop facts) and "turns": [{"turn": n, "question": what the interviewer asked, "text": the merchant's answer (speech-to-text)}].
+STORY_PICK_PROMPT = """
+You edit a 20-30 second vertical video about a traditional-market merchant in Seodaemun-gu, Seoul, for foreign
+visitors. The narration may contain ONLY sentences the merchant actually said; you cannot write or change any words.
+Input JSON: "store" (shop facts) and "sentences": [{"id": n, "question": what the interviewer asked, "text": what the merchant said (a whole answer, or one sentence of a long answer)}].
 
-Return ONLY a JSON object, no markdown: {"lines": ["one spoken sentence", ...]}
+Return ONLY a JSON object, no markdown: {"ids": [sentence ids in the order they should be read]}
 Rules:
-- 4 to 6 sentences, each under 40 Korean characters, 100 to 170 characters in total (about 25 seconds).
-- Make it ONE flowing story, not a list of quotes: a hook → how it began → the market/neighborhood in the old days or
-  what they kept all these years → one memorable moment or person → an invitation to visitors.
-  Connect sentences naturally ("그때는", "지금도", "그래서").
-- Use ONLY facts the merchant actually said. Keep their concrete words (리어카, 옆집 순대 할머니, 명절 줄).
-  Never add years, numbers, names, places, prizes or feelings they did not say. Use "store" facts only for the shop
-  name, market name and menu names.
-- If they said little, write a shorter story (2-3 sentences) from what there is, plus a simple invitation.
-- Plain, warm spoken Korean an elderly merchant would say, polite 해요체. No emoji, no hashtags, no quotes marks.
-- Leave out other people's private information, health and money troubles.
+- Pick 3 to 6 sentences, about 90 to 170 Korean characters in total (about 25 seconds).
+- Order them as one story: how it began → the market/neighborhood in the old days or what they kept all these years →
+  one memorable moment or person → a word to visitors (put an invitation last if there is one).
+- Every picked text must make sense right after the one before it. If a text depends on something not picked
+  ("그때", "그러면서" without its subject), pick what it depends on or skip it.
+- Prefer sentences with concrete scenes (a place, a time, a person, a thing someone said). Skip greetings, fillers,
+  answers that only make sense with the question, and repeated content. Leave out private matters, health and money.
 """.strip()
