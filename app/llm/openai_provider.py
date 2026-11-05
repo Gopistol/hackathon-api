@@ -16,6 +16,9 @@ def _to_llm_error(e: openai.OpenAIError) -> LLMError:
     logger.warning("OpenAI 호출 실패: %s status=%s code=%s", type(e).__name__, status, code)
 
     # APITimeoutError 는 APIConnectionError 의 하위 클래스라 먼저 검사한다.
+    # 크레딧 소진은 재시도해도 안 풀린다. 스트림에서는 RateLimitError 가 아닌 APIError 로 올 수 있어 코드로 먼저 본다.
+    if code in ("insufficient_quota", "credit_balance_exhausted"):
+        return LLMError("OpenAI 크레딧이 부족합니다. 결제 설정을 확인하세요.", 503)
     if isinstance(e, openai.APITimeoutError):
         return LLMError("AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.", 504)
     if isinstance(e, openai.APIConnectionError):
@@ -23,8 +26,6 @@ def _to_llm_error(e: openai.OpenAIError) -> LLMError:
     if isinstance(e, (openai.AuthenticationError, openai.PermissionDeniedError)):
         return LLMError("서버의 OpenAI API 키 설정이 올바르지 않습니다.", 502)
     if isinstance(e, openai.RateLimitError):
-        if code == "insufficient_quota":
-            return LLMError("OpenAI 크레딧이 부족합니다. 결제 설정을 확인하세요.", 503)
         return LLMError("AI 호출 한도를 초과했습니다. 잠시 후 다시 시도하세요.", 429)
     if isinstance(e, (openai.BadRequestError, openai.NotFoundError)):
         return LLMError("AI 요청이 거부되었습니다. OPENAI_MODEL 이름과 입력 길이를 확인하세요.", 502)
