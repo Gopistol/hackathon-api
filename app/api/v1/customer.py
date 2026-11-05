@@ -189,6 +189,7 @@ def list_contents(lang: Lang = LangQ, db: Session = Depends(get_db)):
             "genre": c.genre,
             "foods": [food_name(f, lang) for f in c.foods],
             "foods_ko": c.foods,
+            "image_url": media_url(c.image_path),
         }
         for c in db.scalars(select(Content).order_by(Content.id))
     ]
@@ -219,4 +220,9 @@ def content_foods(content_id: int, lang: Lang = LangQ, db: Session = Depends(get
                 if alt_stores := _stores_selling(db, alt, lang):
                     similar.append({"food_ko": alt, "name": food_name(alt, lang), "stores": alt_stores})
         foods.append({"food_ko": f, "name": food_name(f, lang), "stores": stores, "similar": similar})
-    return {"content_id": c.id, "title": c.title if lang == "ko" else c.title_i18n.get(lang) or c.title, "foods": foods}
+    return {
+        "content_id": c.id,
+        "title": c.title if lang == "ko" else c.title_i18n.get(lang) or c.title,
+        "image_url": media_url(c.image_path),
+        "foods": foods,
+    }

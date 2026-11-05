@@ -141,7 +141,20 @@ def seed() -> None:
                 _seed_video(db, store, s, media)
 
         for c in seed_data.CONTENTS:
-            db.add(Content(title=c["title"], title_i18n=c["i18n"], platform=c["platform"], genre=c["genre"], foods=c["foods"]))
+            image = DEMO / "contents" / f"{c['key']}.jpg"
+            if image.exists():
+                (media / "contents").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(image, media / "contents" / image.name)
+            db.add(
+                Content(
+                    title=c["title"],
+                    title_i18n=c["i18n"],
+                    platform=c["platform"],
+                    genre=c["genre"],
+                    foods=c["foods"],
+                    image_path=f"contents/{image.name}" if image.exists() else None,
+                )
+            )
         db.commit()
     logger.info("시드 완료")
 

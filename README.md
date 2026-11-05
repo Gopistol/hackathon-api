@@ -54,6 +54,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
   - 피드 순서는 위 key 순서. 파일당 100MB 미만(GitHub 제한), 무대 재생을 생각하면 20MB 이하 권장
   - 넣은 뒤: 커밋 → `bash deploy/deploy.sh` → 리셋
 - **실시간 생성 영상**: `FEED_DEMO_ONLY=true`(기본)면 피드에 올라가지 않는다. 진행률·`/videos/{id}`·가게 상세에서만 보인다.
+- **K-콘텐츠 카드 이미지**: `demo/contents/<key>.jpg` (`scripts/make_content_cards.py` 로 만든 더미 카드). 포스터·스틸컷은 저작권 때문에 쓰지 않는다. 사용 허가된 이미지가 생기면 같은 파일 이름으로 바꿔 넣고 배포·리셋
 - **임시 영상**: 발표용 영상이 없을 때 `demo/media/` 의 미리 렌더링한 영상 5개가 피드에 나온다. 실제 사진은
   `demo/photos/<가게 key>/` 에 3~5장 넣고 `.venv/bin/python scripts/make_demo_media.py` → 커밋 → 배포 → 리셋.
 

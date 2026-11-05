@@ -145,6 +145,7 @@ class ContentOut(BaseModel):
     genre: str
     foods: list[str]
     foods_ko: list[str]
+    image_url: str | None = Field(description="카드 이미지 (직접 만든 더미 이미지, 포스터·스틸컷 아님)")
 
 
 class FoodMatch(BaseModel):
@@ -156,6 +157,7 @@ class FoodMatch(BaseModel):
 class ContentFoodsOut(BaseModel):
     content_id: int
     title: str
+    image_url: str | None
     foods: list[dict] = Field(
         description="[{food_ko, name, stores: [StoreCard], similar: [FoodMatch]}]. 매칭 가게가 없으면 similar 에 비슷한 음식"
     )

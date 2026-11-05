@@ -108,6 +108,31 @@ GLOSSARY: dict[str, dict] = {
         "zh": ("韩式甜炸鸡", "裹甜酱的炸鸡块。", "适合外带。"),
     },
     # 작품에만 나오는 음식 (P1 K-콘텐츠 표시용)
+    "라면": {
+        "spicy": 2,
+        "en": ("Ramyeon (Korean Instant Noodles)", "Spicy Korean instant noodles.", ""),
+        "zh": ("韩式拉面", "辣味韩式方便面。", ""),
+    },
+    "국밥": {
+        "spicy": 0,
+        "en": ("Gukbap (Rice Soup)", "Hearty soup served with rice.", ""),
+        "zh": ("汤饭", "配米饭的浓汤。", ""),
+    },
+    "비빔밥": {
+        "spicy": 1,
+        "en": ("Bibimbap (Mixed Rice)", "Rice topped with vegetables and gochujang, mixed before eating.", "Mix everything well before eating."),
+        "zh": ("拌饭", "米饭配蔬菜和辣椒酱，拌匀后吃。", "吃之前拌匀。"),
+    },
+    "나물": {
+        "spicy": 0,
+        "en": ("Namul (Seasoned Vegetables)", "Seasoned vegetable side dishes.", ""),
+        "zh": ("凉拌野菜", "调味的蔬菜小菜。", ""),
+    },
+    "한우": {
+        "spicy": 0,
+        "en": ("Hanwoo (Korean Beef)", "Premium Korean native beef.", ""),
+        "zh": ("韩牛", "韩国本土优质牛肉。", ""),
+    },
     "짜파구리": {
         "spicy": 0,
         "en": ("Jjapaguri (Ram-don)", "Black bean noodles mixed with spicy ramen.", ""),
@@ -124,6 +149,9 @@ GLOSSARY: dict[str, dict] = {
 SIMILAR_FOODS: dict[str, list[str]] = {
     "짜파구리": ["라볶이", "떡볶이"],
     "라면": ["라볶이", "떡볶이"],
+    "국밥": ["순대"],
+    "비빔밥": ["김밥"],
+    "나물": ["김밥"],
     "달고나": ["꽈배기", "호떡"],
     "치킨": ["닭강정"],
     "전": ["빈대떡"],

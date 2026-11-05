@@ -124,22 +124,34 @@ STORES = [
     },
 ]
 
+# K-콘텐츠(P1). 이미지는 demo/contents/<key>.jpg (직접 만든 카드 이미지. 포스터·스틸컷은 쓰지 않는다)
 CONTENTS = [
     {
-        "title": "이상한 변호사 우영우",
-        "i18n": {"en": "Extraordinary Attorney Woo", "zh": "非常律师禹英禑"},
+        "key": "kpop-demon-hunters",
+        "title": "케이팝 데몬 헌터스",
+        "i18n": {"en": "KPop Demon Hunters", "zh": "K-Pop: 猎魔女团"},
         "platform": "Netflix",
+        "genre": "Animation",
+        "foods": ["김밥", "라면", "국밥"],
+    },
+    {
+        "key": "tyrants-chef",
+        "title": "폭군의 셰프",
+        "i18n": {"en": "Bon Appétit, Your Majesty", "zh": "暴君的厨师"},
+        "platform": "tvN · Netflix",
         "genre": "Drama",
-        "foods": ["김밥"],
+        "foods": ["비빔밥"],
     },
     {
-        "title": "기생충",
-        "i18n": {"en": "Parasite", "zh": "寄生虫"},
-        "platform": "Movie",
-        "genre": "Film",
-        "foods": ["짜파구리"],
+        "key": "culinary-class-wars-2",
+        "title": "흑백요리사 시즌 2",
+        "i18n": {"en": "Culinary Class Wars Season 2", "zh": "黑白厨师 第二季"},
+        "platform": "Netflix",
+        "genre": "Variety",
+        "foods": ["나물", "한우"],
     },
     {
+        "key": "squid-game",
         "title": "오징어 게임",
         "i18n": {"en": "Squid Game", "zh": "鱿鱼游戏"},
         "platform": "Netflix",

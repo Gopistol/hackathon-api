@@ -17,3 +17,5 @@ class Content(Base):
     genre: Mapped[str] = mapped_column(String(50), default="")
     # 작품에 나온 음식 한국어 이름: ["떡볶이", "순대"]
     foods: Mapped[list] = mapped_column(JSON, default=list)
+    # media_dir 기준 상대경로. 직접 만든 카드 이미지 (포스터·스틸컷 아님)
+    image_path: Mapped[str | None] = mapped_column(String(300), default=None)

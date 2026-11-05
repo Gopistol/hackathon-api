@@ -83,9 +83,13 @@ def test_video_detail(client) -> None:
 
 def test_contents(client) -> None:
     contents = client.get("/api/v1/contents?lang=en").json()
-    woo = next(c for c in contents if c["title_ko"] == "이상한 변호사 우영우")
-    foods = client.get(f"/api/v1/contents/{woo['content_id']}/foods?lang=en").json()["foods"]
-    assert foods[0]["stores"]  # 김밥 파는 가게
-    parasite = next(c for c in contents if c["title_ko"] == "기생충")
-    foods = client.get(f"/api/v1/contents/{parasite['content_id']}/foods").json()["foods"]
-    assert not foods[0]["stores"] and foods[0]["similar"]
+    assert [c["title_ko"] for c in contents] == ["케이팝 데몬 헌터스", "폭군의 셰프", "흑백요리사 시즌 2", "오징어 게임"]
+    kdh = contents[0]
+    assert kdh["title"] == "KPop Demon Hunters" and kdh["foods_ko"] == ["김밥", "라면", "국밥"]
+    assert kdh["image_url"].endswith(".jpg") and client.get(kdh["image_url"]).status_code == 200
+
+    foods = {f["food_ko"]: f for f in client.get(f"/api/v1/contents/{kdh['content_id']}/foods?lang=en").json()["foods"]}
+    assert foods["김밥"]["stores"]  # 김밥 파는 시드 가게
+    assert not foods["라면"]["stores"] and foods["라면"]["similar"][0]["food_ko"] == "라볶이"
+    assert foods["국밥"]["similar"][0]["food_ko"] == "순대"
+    assert foods["라면"]["name"].startswith("Ramyeon")
