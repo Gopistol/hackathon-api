@@ -1,5 +1,6 @@
 """사장님 음성 대화형 등록: store_name → menus → payment → hours → story → done → publish"""
 
+import asyncio
 import json
 import logging
 import time
@@ -148,15 +149,33 @@ async def _translations(db: Session, llm: LLMProvider, s: OnboardingSession) -> 
     return data
 
 
+# 진행 중인 미리 번역. 올리기가 같은 번역을 또 부르지 않고 이걸 기다린다.
+_prefetching: dict[int, asyncio.Event] = {}
+PREFETCH_WAIT = 15.0  # 초
+
+
 async def prefetch_translations(session_id: int, llm: LLMProvider) -> None:
     """마지막 단계를 확인하면 백그라운드로 번역을 미리 해 둔다. 요약·올리기가 기다리지 않게."""
-    with SessionLocal() as db:
-        s = db.get(OnboardingSession, session_id)
-        if s and not s.published:
-            try:
+    done = _prefetching.setdefault(session_id, asyncio.Event())
+    try:
+        with SessionLocal() as db:
+            s = db.get(OnboardingSession, session_id)
+            if s and not s.published:
                 await _translations(db, llm, s)
-            except Exception as e:  # 실패하면 올리기 때 다시 시도한다
-                logger.warning("번역 미리 하기 실패 session=%s: %s", session_id, type(e).__name__)
+    except Exception as e:  # 실패하면 올리기 때 다시 시도한다
+        logger.warning("번역 미리 하기 실패 session=%s: %s", session_id, type(e).__name__)
+    finally:
+        done.set()
+        _prefetching.pop(session_id, None)
+
+
+async def _wait_prefetch(db: Session, s: OnboardingSession) -> None:
+    if (done := _prefetching.get(s.id)) is not None:
+        try:
+            await asyncio.wait_for(done.wait(), PREFETCH_WAIT)
+        except TimeoutError:
+            pass
+        db.refresh(s)  # 다른 세션에서 저장한 번역 캐시를 읽는다
 
 
 async def summary(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
@@ -203,6 +222,7 @@ async def publish(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
 
     name = _parsed(s, "store_name")
     menus = _parsed(s, "menus").get("menus", [])
+    await _wait_prefetch(db, s)
     translations = await _translations(db, llm, s)
 
     store = db.get(Store, s.store_id) if s.store_id else None

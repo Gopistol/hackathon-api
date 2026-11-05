@@ -209,3 +209,47 @@ def test_summary_never_waits_for_translation(client, provider, monkeypatch) -> N
     assert summary["preview_en"]["translated"] is True and summary["preview_en"]["name"] == "Translated Store"
     client.post(f"{base}/{sid}/publish")
     assert fake.calls == calls_after_prefetch  # 요약·올리기에서 번역을 다시 부르지 않음
+
+
+def test_publish_waits_for_inflight_prefetch_instead_of_translating_again(client, provider, monkeypatch) -> None:
+    from app.services import onboarding
+
+    calls = {"n": 0}
+
+    async def slow_translate(*args, **kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(0.2)
+        return {"en": {"store": {"name": "T", "description": ""}, "menus": {"m0": {"name": "M", "description": "", "how_to_eat": ""}}},
+                "zh": {"store": {"name": "T", "description": ""}, "menus": {"m0": {"name": "M", "description": "", "how_to_eat": ""}}}}
+
+    monkeypatch.setattr(ai, "translate_store", slow_translate)
+    base = "/api/v1/merchant/onboarding/sessions"
+    sid = client.post(base).json()["session_id"]
+    for step, text in [("store_name", "가게"), ("menus", "순대 5000원"), ("payment", "현금"), ("hours", "10시부터 9시까지")]:
+        client.post(f"{base}/{sid}/answers", data={"text": text})
+        client.post(f"{base}/{sid}/confirm", json={"step": step, "accepted": True})
+    client.post(f"{base}/{sid}/answers", data={"text": "맛있어요"})
+    # 마지막 확인 → 미리 번역을 직접 띄우고, 끝나기 전에 올리기
+    onboarding.confirm(*_session(sid), "story", True, None)
+
+    async def race():
+        task = asyncio.create_task(onboarding.prefetch_translations(sid, provider))
+        await asyncio.sleep(0.01)
+        from app.db.session import SessionLocal
+        from app.models import OnboardingSession
+
+        with SessionLocal() as db:
+            result = await onboarding.publish(db, provider, db.get(OnboardingSession, sid))
+        await task
+        return result
+
+    assert asyncio.run(race())["store_id"]
+    assert calls["n"] == 1
+
+
+def _session(sid):
+    from app.db.session import SessionLocal
+    from app.models import OnboardingSession
+
+    db = SessionLocal()
+    return db, db.get(OnboardingSession, sid)
