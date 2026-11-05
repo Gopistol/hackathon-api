@@ -773,7 +773,10 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
 _FILLER_ONLY = re.compile(r"^(네|예|응|음+|어+|아+|그렇죠|맞아요|글쎄요|몰라요|없어요)[.!?~\s]*$")
 
 
-STORY_CHARS = 170  # 약 30초. 넘으면 문장 단위로 뺀다 (문장 중간을 자르지 않는다)
+# 영상 이야기 길이 (글자 수). 시장 할머니 목소리는 1초에 7~8자 → 230자가 약 30초.
+# 넘으면 가운데 답을 통째로 빼고(문장 중간을 자르지 않는다), 모자라면 안 고른 답을 말한 순서대로 더한다.
+STORY_CHARS = 230
+STORY_MIN_CHARS = 180
 _SENTENCE_RE = re.compile(r"(?<=[.!?~])\s+")
 
 
@@ -804,7 +807,7 @@ def _rule_story(sentences: list[dict]) -> list[dict]:
     """LLM 없이: 답마다 첫 문장을 말한 순서대로."""
     seen: set[int] = set()
     firsts = [x for x in sentences if not (x["turn"] in seen or seen.add(x["turn"]))]
-    return _fit(firsts)
+    return _fit(_fill(firsts, sentences))
 
 
 async def _pick_story(db: Session, llm: LLMProvider, iv: Interview, sentences: list[dict]) -> list[dict] | None:
@@ -824,7 +827,22 @@ async def _pick_story(db: Session, llm: LLMProvider, iv: Interview, sentences: l
         return None
     by_id = {x["id"]: x for x in sentences}
     picked = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]
-    return _fit(picked) if len(picked) >= 2 else None
+    return _fit(_fill(picked, sentences)) if len(picked) >= 2 else None
+
+
+def _fill(picked: list[dict], sentences: list[dict]) -> list[dict]:
+    """AI 가 너무 적게 골랐으면 안 고른 답을 말한 순서대로 더한다 (마지막 한마디는 끝에 둔다)."""
+    picked = list(picked)
+    for x in sentences:
+        total = sum(len(y["text"]) for y in picked)
+        if total >= STORY_MIN_CHARS:
+            break
+        if x in picked or total + len(x["text"]) > STORY_CHARS:
+            continue
+        # 앞쪽 답 뒤에 넣는다. 마지막 자리는 손님께 한마디 자리라 비운다
+        at = next((k for k, y in enumerate(picked[:-1]) if y["id"] > x["id"]), max(len(picked) - 1, 0))
+        picked.insert(at, x)
+    return picked
 
 
 async def compose(db: Session, llm: LLMProvider, iv: Interview) -> dict:
