@@ -112,12 +112,17 @@ and the conversation, e.g. "분식집" over "한식집" for a shop selling 떡�
 "extra_asked" (how many extra questions were asked).
 
 Return ONLY a JSON object, no markdown:
-{{"say": str, "asking": str, "finish": bool, "remove_items": [names the merchant said they no longer sell],
+{{"heard": str, "say": str, "asking": str, "finish": bool, "remove_items": [names the merchant said they no longer sell],
  "updates": {{only the fields that changed in this answer, from:
    "store_name": str, "category": str,
    "items": [{{"name_ko": str, "price": int|null, "unit": str|null, "spicy_level": 0-3|null, "is_ai_guess": bool}}],
    "payment": ["cash"|"card"|"foreign_card"|"onnuri"], "hours": str, "extras": {{"짧은 항목명": "값"}}}},
  "needs_check": ["짧은 한국어 메모"]}}
+
+"heard": the merchant's latest answer rewritten as clean, complete Korean sentences for the screen. Fix obvious
+speech-to-text errors using the question, the conversation and "answer_alt"; drop fillers (음, 어, 그러니까) and
+repetitions; keep their meaning, their own words and speaking style (반말/존댓말 as they spoke). Never add facts,
+numbers, names or details that were not said. If the answer is already clean, copy it.
 
 Rules for "updates":
 - Output ONLY fields that this answer adds or changes; omit everything else (use {{}} if nothing changed). Keep it short.
@@ -175,8 +180,12 @@ when they differ, use whichever makes sense), "turn" (answers so far).
 Story beats: {json.dumps(STORY_BEATS, ensure_ascii=False)}
 
 Return ONLY a JSON object, no markdown:
-{{"covered": [beats the merchant has really talked about so far], "anecdote": bool (a concrete moment, person or detail was told),
- "asking": beat of your next question, "finish": bool, "say": str}}
+{{"heard": str, "covered": [beats the merchant has really talked about so far],
+ "anecdote": bool (a concrete moment, person or detail was told), "asking": beat of your next question, "finish": bool, "say": str}}
+"heard": the merchant's latest answer rewritten as clean, complete Korean sentences for the screen. Fix obvious
+speech-to-text errors using the question, the conversation and "answer_alt"; drop fillers (음, 어, 그러니까) and
+repetitions; keep their meaning, their own words and speaking style (반말/존댓말 as they spoke). Never add facts,
+numbers, names or details that were not said. If the answer is already clean, copy it.
 
 How to interview:
 - Ask open questions about ONE concrete moment ("그때 기억나는 손님 한 분만 얘기해 주세요"), not yes/no questions.

@@ -249,3 +249,25 @@ def test_items_merge_and_missing_prices_are_asked_once(client) -> None:
         app.dependency_overrides.pop(get_llm)
     assert "결제" in out["say_ko"]  # 가격은 두 번 물었으니 확인 목록으로 넘기고 다음 질문
     assert any("순대" in n for n in client.get(f"{BASE}/{iid}").json()["needs_check"])
+
+
+def test_answer_is_shown_cleaned_but_raw_is_kept(client) -> None:
+    iid = client.post(BASE, json={"kind": "register"}).json()["interview_id"]
+    raw = "음 어 우리 가게는 그 영천 떡지비에요"
+    replies = [
+        {"heard": "우리 가게는 영천 떡집이에요.", "say": "어떤 가게예요?", "asking": "category", "finish": False,
+         "updates": {"store_name": "영천 떡집"}, "needs_check": []},
+        {"heard": "1985년부터 떡집이에요.", "say": "대표 상품이랑 가격을 알려 주세요.", "asking": "items", "finish": False,
+         "updates": {"category": "떡·한과"}, "needs_check": []},
+    ]  # fmt: skip
+    fake = FakeLLM(replies)
+    app.dependency_overrides[get_llm] = lambda: fake
+    try:
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": raw}).json()
+        assert out["transcript"] == "우리 가게는 영천 떡집이에요." and out["transcript_raw"] == raw
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "떡집이에요"}).json()
+    finally:
+        app.dependency_overrides.pop(get_llm)
+    assert out["transcript"] == "떡집이에요"  # 말하지 않은 연도가 생긴 글은 버린다
+    turns = client.get(f"{BASE}/{iid}").json()["turns"]
+    assert turns[0]["transcript"] == "우리 가게는 영천 떡집이에요." and turns[0]["transcript_raw"] == raw

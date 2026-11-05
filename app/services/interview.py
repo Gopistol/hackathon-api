@@ -41,7 +41,7 @@ MAX_ASK_PER_BEAT = 2
 MAX_ASK_PER_FIELD = 2  # 가게 등록도 한 항목은 두 번까지만 묻고, 못 들으면 요약 화면 확인 목록으로 넘긴다
 STT_BUDGET = 6.0  # 초. 음성 인식이 늦으면 브라우저가 받아 적은 글을 쓰거나 다시 묻는다 (오래 조용하지 않게)
 TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가 끊긴 느낌이 들지 않게)
-TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
+TURN_MAX_TOKENS = 500  # 바뀐 항목, 다듬은 답, 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
 HISTORY = 12  # 지난 질문·답을 전부 넘겨 맥락을 잃지 않게 한다 (최대 턴 수 이상)
 QUOTE_CHARS = (40, 170)  # 원문 구간 글자 수 (짧으면 짧은 답도 더하고, 길면 자른다)
@@ -124,8 +124,26 @@ def _register_question(slot: str, draft: dict) -> str:
     return _items_question(draft.get("category")) if slot == "items" else REGISTER_QUESTIONS[slot]
 
 
+def _said(t: dict) -> str:
+    """화면·대화 기록에 쓰는 사장님 말: AI 가 다듬은 글, 없으면 인식된 글."""
+    return t.get("clean") or t["transcript"]
+
+
 def _history(iv: Interview) -> list[dict]:
-    return [{"q": t["question"], "a": t["transcript"]} for t in iv.turns[-HISTORY:]]
+    return [{"q": t["question"], "a": _said(t)} for t in iv.turns[-HISTORY:]]
+
+
+def _clean_heard(value, turn: dict) -> str | None:
+    """LLM 이 다듬은 사장님 말을 검사한다. 하지 않은 숫자가 생겼거나 원래 말과 너무 다르면 버린다."""
+    text = " ".join(str(value or "").split())[:300]
+    sources = [x for x in (turn["transcript"], turn.get("alt")) if x]
+    if not text or not _numbers_ok(text, *sources):
+        return None
+    prices = lambda t: {ai._price(m) for m in ai._PRICE_RE.finditer(t)} - {None}  # noqa: E731
+    if not prices(text) <= set().union(*(prices(x) for x in sources)):
+        return None  # "두 개 천 원" → "두 개 2천 원" 처럼 금액이 바뀌었다
+    close = max(difflib.SequenceMatcher(None, _compact(text), _compact(x), autojunk=False).ratio() for x in sources)
+    return text if close >= 0.35 else None
 
 
 def _progress(iv: Interview) -> int:
@@ -140,11 +158,13 @@ def _progress(iv: Interview) -> int:
 def _out(iv: Interview, llm: LLMProvider, say: str, transcript: str | None = None, heard: bool = True) -> dict:
     if heard:  # 다시 묻는 말은 기록하지 않는다 (다음 답의 질문은 원래 질문)
         iv.state = {**iv.state, "last_say": say}
+    last = iv.turns[-1] if transcript and iv.turns else None
     return {
         "interview_id": iv.id,
         "kind": iv.kind,
         "turn": len(iv.turns),
-        "transcript": transcript,
+        "transcript": _said(last) if last else transcript,
+        "transcript_raw": last["transcript"] if last else transcript,
         "heard": heard,
         "say_ko": say,
         "audio_url": tts.audio_url(llm, say),
@@ -162,7 +182,7 @@ def detail(iv: Interview, llm: LLMProvider) -> dict:
         "kind": iv.kind,
         "status": iv.status,
         "store_id": iv.store_id,
-        "turns": [{"question": t["question"], "transcript": t["transcript"]} for t in iv.turns],
+        "turns": [{"question": t["question"], "transcript": _said(t), "transcript_raw": t["transcript"]} for t in iv.turns],
         "draft": iv.state.get("draft"),
         "needs_check": needs_check(iv),
         "session_id": iv.result.get("session_id"),
@@ -212,6 +232,11 @@ def start(db: Session, llm: LLMProvider, kind: str, store_id: int | None, market
 
 def _compact(text: str) -> str:
     return re.sub(r"[\s.,!?~·'\"]+", "", text or "")
+
+
+def _keep_clean(iv: Interview, value) -> None:
+    if clean := _clean_heard(value, iv.turns[-1]):
+        iv.turns = [*iv.turns[:-1], {**iv.turns[-1], "clean": clean}]
 
 
 def _is_echo(transcript: str, last_say: str) -> bool:
@@ -374,7 +399,9 @@ def _merge_items(old: list[dict], new: list, remove=None) -> list:
         key = _compact(str(m["name_ko"]))
         before = merged.get(key, {})
         merged[key] = {**before, **{k: v for k, v in m.items() if v is not None or k not in before}}
-    return [m for k, m in merged.items() if k not in gone]
+    # "떡볶이"(가격 없음) 뒤에 "기름 떡볶이 4천 원"이 나오면 앞의 일반 이름은 뺀다 (가격을 또 묻지 않게)
+    vague = {k for k, m in merged.items() if m.get("price") is None and any(k != o and k in o for o in merged)}
+    return [m for k, m in merged.items() if k not in gone and k not in vague]
 
 
 def _rule_update(draft: dict, asking: str, transcript: str) -> dict:
@@ -516,6 +543,7 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
             next_asking = str(data.get("asking") or "")
             llm_finish = bool(data.get("finish"))
             used_llm = True
+            _keep_clean(iv, data.get("heard"))
         except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
             logger.warning("인터뷰 LLM 실패, 고정 질문으로 이어 갑니다: %s", type(e).__name__)
     if not used_llm:
@@ -674,6 +702,7 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             asking = str(data.get("asking") or "")
             llm_finish = bool(data.get("finish"))
             used_llm = True
+            _keep_clean(iv, data.get("heard"))
             if say and not _numbers_ok(say, " ".join(t["transcript"] for t in iv.turns), json.dumps(payload["store"], ensure_ascii=False)):
                 say = None
         except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
@@ -739,7 +768,7 @@ async def _narration(db: Session, llm: LLMProvider, iv: Interview) -> str | None
     """인터뷰 전체를 읽고 흐름이 있는 1인칭 이야기를 쓴다. 사장님이 하지 않은 숫자가 있거나 형식이 틀리면 None."""
     payload = {
         "store": _store_facts(db, iv),
-        "turns": [{"turn": i, "question": t["question"], "text": t["transcript"]} for i, t in enumerate(iv.turns)],
+        "turns": [{"turn": i, "question": t["question"], "text": _said(t)} for i, t in enumerate(iv.turns)],
     }
     try:
         data = await asyncio.wait_for(
@@ -751,7 +780,7 @@ async def _narration(db: Session, llm: LLMProvider, iv: Interview) -> str | None
         logger.warning("이야기 대본 쓰기 실패, 원문 구간으로 대체: %s", type(e).__name__)
         return None
     text = " ".join(x if x[-1] in ".!?~" else f"{x}." for x in lines)
-    said = " ".join(f"{t['transcript']} {t.get('alt') or ''}" for t in iv.turns)
+    said = " ".join(f"{t['transcript']} {t.get('alt') or ''} {t.get('clean') or ''}" for t in iv.turns)
     if not NARRATION_CHARS[0] <= len(text) <= NARRATION_CHARS[1] or not _numbers_ok(text, said, json.dumps(payload["store"], ensure_ascii=False)):
         logger.warning("이야기 대본이 길이·숫자 검사에 걸려 원문 구간으로 대체합니다")
         return None
