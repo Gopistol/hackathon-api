@@ -67,6 +67,7 @@ def test_failed_job_points_to_fallback_video(client, monkeypatch) -> None:
     job_id = client.post("/api/v1/merchant/stores/1/videos", files=files).json()["job_id"]
     job = client.get(f"/api/v1/merchant/videos/jobs/{job_id}").json()
     assert job["status"] == "failed" and job["error"]
+    assert job["error_code"] == "VIDEO_FAILED"
     fallback = client.get(f"/api/v1/videos/{job['fallback_video_id']}").json()
     assert fallback["store_id"] == 1
 

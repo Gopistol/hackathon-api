@@ -18,6 +18,8 @@ class Video(Base):
     job_status: Mapped[str] = mapped_column(String(20), default="queued")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(String(300), default=None)
+    # RECORDING_TOO_LONG | VIDEO_FAILED (프론트가 다시 녹음 / 다시 시도를 구분하는 용도)
+    error_code: Mapped[str | None] = mapped_column(String(30), default=None)
     # media_dir 기준 상대경로
     video_path: Mapped[str | None] = mapped_column(String(300), default=None)
     thumbnail_path: Mapped[str | None] = mapped_column(String(300), default=None)

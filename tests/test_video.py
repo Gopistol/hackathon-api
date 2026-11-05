@@ -21,6 +21,7 @@ def test_video_job_renders_but_stays_out_of_feed(client) -> None:
     job = client.get(f"/api/v1/merchant/videos/jobs/{job_id}").json()
     assert job["status"] == "done", job
     assert job["progress"] == 100 and job["video_id"] == job_id
+    assert job["error_code"] is None
 
     video = client.get(f"/api/v1/videos/{job_id}").json()
     assert video["duration"] == 20.0  # 스크립트 없음 → 가게 정보 자막 4줄 → 20초
@@ -154,6 +155,7 @@ def test_long_recording_fails_with_clear_message(client, monkeypatch) -> None:
     job_id = client.post("/api/v1/merchant/stores/1/videos", files=files).json()["job_id"]
     job = client.get(f"/api/v1/merchant/videos/jobs/{job_id}").json()
     assert job["status"] == "failed" and "30초" in job["error"]
+    assert job["error_code"] == "RECORDING_TOO_LONG"
     assert job["fallback_video_id"]
 
 

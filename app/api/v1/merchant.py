@@ -150,6 +150,7 @@ def job_status(job_id: int, db: Session = Depends(get_db)):
         "progress": v.progress,
         "video_id": v.id if v.job_status == "done" else None,
         "error": v.error,
+        "error_code": v.error_code if v.job_status == "failed" else None,
         "fallback_video_id": _fallback_video(db, v) if v.job_status == "failed" else None,
     }
 

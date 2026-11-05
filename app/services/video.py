@@ -255,11 +255,12 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             video = db.get(Video, video_id)
             if video:
                 video.job_status = "failed"
-                video.error = (
-                    "녹음이 30초 분량을 넘어요. 더 짧게 다시 녹음하거나 스크립트로 써 주세요."
-                    if isinstance(e, RecordingTooLong)
-                    else "영상 생성에 실패했어요. 다시 시도해 주세요."
-                )
+                if isinstance(e, RecordingTooLong):
+                    video.error_code = "RECORDING_TOO_LONG"
+                    video.error = "녹음이 30초 분량을 넘어요. 더 짧게 다시 녹음하거나 스크립트로 써 주세요."
+                else:
+                    video.error_code = "VIDEO_FAILED"
+                    video.error = "영상 생성에 실패했어요. 다시 시도해 주세요."
                 db.commit()
         finally:
             db.close()
@@ -270,6 +271,10 @@ def fail_stuck_jobs() -> None:
     """서버 재시작으로 멈춘 작업을 failed 로 바꾼다."""
     with SessionLocal() as db:
         db.query(Video).filter(Video.job_status.in_(["queued", "processing"])).update(
-            {"job_status": "failed", "error": "서버가 재시작되어 작업이 중단됐어요. 다시 시도해 주세요."}
+            {
+                "job_status": "failed",
+                "error_code": "VIDEO_FAILED",
+                "error": "서버가 재시작되어 작업이 중단됐어요. 다시 시도해 주세요.",
+            }
         )
         db.commit()

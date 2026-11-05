@@ -71,6 +71,9 @@ class JobStatus(BaseModel):
     progress: int
     video_id: int | None
     error: str | None
+    error_code: Literal["RECORDING_TOO_LONG", "VIDEO_FAILED"] | None = Field(
+        description="failed 일 때만. RECORDING_TOO_LONG: 다시 녹음하거나 스크립트로 / VIDEO_FAILED: 다시 시도하거나 대체 영상"
+    )
     fallback_video_id: int | None = Field(
         description="failed 일 때 대신 보여줄 영상(같은 가게의 기존 영상, 없으면 최신 시연 영상)"
     )
