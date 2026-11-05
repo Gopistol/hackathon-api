@@ -143,3 +143,32 @@ def test_plan_segments_splits_long_single_photo() -> None:
     assert len(segs) == 4 and all(i == 0 for i, _ in segs)
     assert abs(sum(sec for _, sec in segs) - 25.0) < 1e-6
     assert plan_segments(5, 20.0) == [(i, 4.0) for i in range(5)]
+
+
+def test_long_recording_fails_with_clear_message(client, monkeypatch) -> None:
+    from app.services import ai
+
+    long_text = " ".join(f"{i}번째 문장이에요." for i in range(1, 10))
+    monkeypatch.setitem(ai.MOCK_TRANSCRIPTS, "story", long_text)
+    files = [("photos", ("0.jpg", _jpeg("red"), "image/jpeg")), ("audio", ("blob", b"\x1aE\xdf\xa3" + b"0" * 64, "audio/webm"))]
+    job_id = client.post("/api/v1/merchant/stores/1/videos", files=files).json()["job_id"]
+    job = client.get(f"/api/v1/merchant/videos/jobs/{job_id}").json()
+    assert job["status"] == "failed" and "30초" in job["error"]
+    assert job["fallback_video_id"]
+
+
+def test_missing_column_is_added_to_existing_table(tmp_path) -> None:
+    from sqlalchemy import create_engine, inspect, text
+
+    import app.db.session as session
+
+    engine = create_engine(f"sqlite:///{tmp_path}/old.db")
+    with engine.begin() as conn:  # script_source 가 없던 예전 videos 테이블
+        conn.execute(text("CREATE TABLE videos (id INTEGER PRIMARY KEY, store_id INTEGER)"))
+    original = session.engine
+    session.engine = engine
+    try:
+        session.init_db()
+    finally:
+        session.engine = original
+    assert "script_source" in {c["name"] for c in inspect(engine).get_columns("videos")}

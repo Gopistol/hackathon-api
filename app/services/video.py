@@ -36,6 +36,10 @@ SCRIPT_BUDGET = 12  # 초. 자막 생성이 늦으면 템플릿 문장을 쓴다
 _render_lock = asyncio.Semaphore(1)
 
 
+class RecordingTooLong(Exception):
+    """녹음을 글로 바꿨더니 30초(자막 7줄)를 넘음. 뒷부분을 버리지 않고 다시 녹음을 요청한다."""
+
+
 def ffmpeg_exe() -> str:
     s = get_settings()
     if s.ffmpeg_path:
@@ -210,6 +214,8 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                     source = "stt" if merchant_text else "auto"
                 except (AppError, TimeoutError):
                     pass  # 가게 정보로 만든다
+                if source == "stt" and len(ai.split_script(merchant_text, limit=None)) > ai.MAX_SCRIPT_LINES:
+                    raise RecordingTooLong
             store = db.get(Store, video.store_id)
             menu = db.get(Menu, video.menu_id) if video.menu_id else None
             ctx = script_context(db, store, menu, merchant_text, langs)
@@ -248,7 +254,12 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             db.rollback()
             video = db.get(Video, video_id)
             if video:
-                video.job_status, video.error = "failed", "영상 생성에 실패했어요. 다시 시도해 주세요."
+                video.job_status = "failed"
+                video.error = (
+                    "녹음이 30초 분량을 넘어요. 더 짧게 다시 녹음하거나 스크립트로 써 주세요."
+                    if isinstance(e, RecordingTooLong)
+                    else "영상 생성에 실패했어요. 다시 시도해 주세요."
+                )
                 db.commit()
         finally:
             db.close()
