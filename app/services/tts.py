@@ -6,6 +6,7 @@
 주소를 null 로 두어 지금처럼 글자로만 보인다.
 """
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import AsyncIterator
@@ -15,6 +16,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.llm import LLMError, LLMProvider
+from app.services import elevenlabs
 from app.services.ai import is_mock
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,8 @@ def _dir() -> Path:
 
 def _key(text: str) -> str:
     s = get_settings()
-    return hashlib.sha256(f"{s.elevenlabs_tts_voice_id}|{s.openai_tts_voice}|{text}".encode()).hexdigest()[:20]
+    voice = f"{s.elevenlabs_tts_voice_id}|{s.elevenlabs_tts_model}|{s.openai_tts_voice}"
+    return hashlib.sha256(f"{voice}|{text}".encode()).hexdigest()[:20]
 
 
 def audio_url(llm: LLMProvider, text: str | None) -> str | None:
@@ -85,25 +88,33 @@ class _TTSFailed(RuntimeError):
 
 
 async def _elevenlabs_chunks(text: str) -> AsyncIterator[bytes]:
+    """동시 요청이 몰려 429 가 나면 잠깐 기다렸다 다시 한다. 바로 OpenAI 로 넘기면 목소리가 바뀐다."""
     s = get_settings()
-    async with httpx.AsyncClient(timeout=s.openai_timeout) as client:
-        async with client.stream(
-            "POST",
-            f"https://api.elevenlabs.io/v1/text-to-speech/{s.elevenlabs_tts_voice_id}/stream",
-            params={"output_format": "mp3_44100_128"},
-            headers={"xi-api-key": s.elevenlabs_api_key.get_secret_value()},
-            json={
-                "text": text,
-                "model_id": s.elevenlabs_tts_model,
-                # 어르신이 알아듣기 쉽게 조금 천천히, 들쭉날쭉하지 않게
-                "voice_settings": {"stability": 0.6, "similarity_boost": 0.8, "speed": 0.92},
-            },
-        ) as r:
-            if not r.is_success:
-                logger.warning("ElevenLabs TTS 실패 status=%s", r.status_code)
-                raise _TTSFailed
-            async for chunk in r.aiter_bytes():
-                yield chunk
+    for attempt in range(3):
+        async with elevenlabs.slots, httpx.AsyncClient(timeout=s.openai_timeout) as client:
+            async with client.stream(
+                "POST",
+                f"https://api.elevenlabs.io/v1/text-to-speech/{s.elevenlabs_tts_voice_id}/stream",
+                params={"output_format": "mp3_44100_128"},
+                headers={"xi-api-key": s.elevenlabs_api_key.get_secret_value()},
+                json={
+                    "text": text,
+                    "model_id": s.elevenlabs_tts_model,
+                    # 짧은 말("네~")을 일본어처럼 읽지 않게 한국어로 고정한다
+                    "language_code": "ko",
+                    # 어르신이 알아듣기 쉽게 조금 천천히, 들쭉날쭉하지 않게
+                    "voice_settings": {"stability": 0.6, "similarity_boost": 0.8, "speed": 0.92},
+                },
+            ) as r:
+                if r.is_success:
+                    async for chunk in r.aiter_bytes():
+                        yield chunk
+                    return
+                logger.warning("ElevenLabs TTS 실패 status=%s (%d회)", r.status_code, attempt + 1)
+                if r.status_code != 429:
+                    break
+        await asyncio.sleep(0.4 * (attempt + 1))
+    raise _TTSFailed
 
 
 async def _openai_chunks(llm: LLMProvider, text: str) -> AsyncIterator[bytes]:

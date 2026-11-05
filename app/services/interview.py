@@ -38,6 +38,7 @@ MAX_EXTRA = 2  # 필수 항목 다음에 묻는 업종별 질문 수
 MAX_TURNS = {"register": 12, "story": 8}
 MIN_STORY_TURNS = 3
 MAX_ASK_PER_BEAT = 2
+MAX_ASK_PER_FIELD = 2  # 가게 등록도 한 항목은 두 번까지만 묻고, 못 들으면 요약 화면 확인 목록으로 넘긴다
 TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가 끊긴 느낌이 들지 않게)
 TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
@@ -51,8 +52,12 @@ CLOSING = {
     "story": "귀한 이야기 고맙습니다. 이 이야기로 영상을 만들어 드릴게요.",
 }
 REPROMPT = "잘 못 들었어요. 한 번만 더 말씀해 주세요."
-# 말이 끝나자마자 프론트가 바로 틀어 주는 짧은 맞장구 (다음 질문을 기다리는 동안 조용하지 않게)
-FILLERS = ["네~", "아, 그렇군요.", "음, 네."]
+# 말이 끝나자마자 프론트가 바로 틀어 주는 짧은 맞장구 (다음 질문을 기다리는 동안 조용하지 않게).
+# "네~"처럼 너무 짧으면 음성 합성이 다른 나라 말처럼 읽는 경우가 있어 한 마디 이상으로 둔다.
+FILLERS = ["네, 잘 들었어요.", "아, 그러시구나.", "네, 알겠어요."]
+# 맞장구를 이미 틀었으니 AI 말 앞의 "네," "아," 는 뺀다 (같은 말이 두 번 들리지 않게)
+_CONFIRM_RE = re.compile(r"(맞(나요|죠|으세요|습니까|아요|지요)|하신\s*거죠|이신\s*거죠|이시죠)\s*\??\s*$")
+_LEAD_FILLER = re.compile(r"^(네|예|아|음|아하)[,.~!]*\s+")
 
 REGISTER_QUESTIONS = {
     "store_name": "안녕하세요! 가게 등록을 도와드릴게요. 가게 이름이 뭐예요?",
@@ -343,6 +348,20 @@ def _clean_draft(raw, old: dict) -> dict:
     }
 
 
+def _merge_items(old: list[dict], new: list, remove=None) -> list:
+    """LLM 이 보낸 메뉴를 이름으로 기존 목록에 합친다. 빠뜨린 기존 메뉴가 사라지거나 가격이 지워지지 않게.
+    remove 에 있는 이름만 뺀다 ("순대는 이제 안 팔아요")."""
+    gone = {_compact(str(x)) for x in remove or []}
+    merged = {_compact(m["name_ko"]): dict(m) for m in old}
+    for m in new:
+        if not isinstance(m, dict) or not m.get("name_ko"):
+            continue
+        key = _compact(str(m["name_ko"]))
+        before = merged.get(key, {})
+        merged[key] = {**before, **{k: v for k, v in m.items() if v is not None or k not in before}}
+    return [m for k, m in merged.items() if k not in gone]
+
+
 def _rule_update(draft: dict, asking: str, transcript: str) -> dict:
     """LLM 없이 지금 물은 항목만 규칙으로 채운다."""
     d = {**draft}
@@ -352,7 +371,7 @@ def _rule_update(draft: dict, asking: str, transcript: str) -> dict:
         d["category"] = _match_category(transcript) or None
     elif asking == "items":
         items = [{**m, "unit": None} for m in ai._RULES["menus"](transcript)[0]["menus"]]
-        d["items"] = items or d["items"]
+        d["items"] = _merge_items(d["items"], items)
     elif asking == "payment":
         d["payment"] = ai._RULES["payment"](transcript)[0]["payment"]
     elif asking == "hours":
@@ -416,10 +435,10 @@ def _numbers_ok(say: str, *sources: str) -> bool:
 
 def _echo(asking: str, draft: dict) -> str:
     if asking == "store_name" and draft.get("store_name"):
-        return f"{draft['store_name']}, 좋아요."
+        return f"{draft['store_name']},"
     if asking == "category" and draft.get("category"):
         return f"{draft['category']} 가게군요."
-    return "네, 알겠어요."
+    return ""  # 맞장구는 프론트가 이미 틀었다
 
 
 async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tuple[str, bool]:
@@ -441,7 +460,10 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
                 ai.complete_json(llm, REGISTER_INTERVIEW_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
                 TURN_BUDGET,
             )
-            new = _clean_draft(data.get("updates") or {}, draft)
+            updates = dict(data.get("updates") or {})
+            if isinstance(updates.get("items"), list) or data.get("remove_items"):
+                updates["items"] = _merge_items(draft["items"], updates.get("items") or [], data.get("remove_items"))
+            new = _clean_draft(updates, draft)
             needs = [str(x)[:100] for x in (data.get("needs_check") or [])][:15]  # LLM 이 지금 남은 것만 다시 보낸다
             say = str(data.get("say") or "").strip()[:200] or None
             next_asking = str(data.get("asking") or "")
@@ -466,20 +488,33 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
         if m["price"] is None and not any(m["name_ko"] in n for n in needs):
             needs.append(f"{m['name_ko']} 가격")
 
-    missing = _missing(new)
+    asked = dict(st.get("asked") or {asking: 1})  # 항목마다 물어본 횟수
+    tired = lambda k: asked.get(k, 0) >= MAX_ASK_PER_FIELD  # noqa: E731  두 번 물었으면 확인 목록으로 넘긴다
+    missing = [k for k in _missing(new) if not tired(k)]
+    no_price = [m["name_ko"] for m in new["items"] if m["price"] is None]
     finish = False
-    if missing:
+    if next_asking in REQUIRED and say and (tired(next_asking) or (next_asking != "items" and next_asking not in _missing(new))):
+        say = None  # 이미 들은 걸 다시 묻거나 같은 걸 세 번째로 묻지 않는다
+    if say and _CONFIRM_RE.search(say):
+        say = None  # "맞나요?" 같은 확인은 요약 화면에서 한다
+    if no_price and not tired("items") and next_asking != "items" and (asking == "items" or not missing):
+        # 가격 빠진 메뉴는 메뉴 답 바로 다음(또는 필수 항목을 다 들은 뒤)에 한 번에 묶어서 한 번만 묻는다
+        next_asking = "items"
+        say = f"{', '.join(no_price[:3])} 가격은 얼마예요?"
+    elif missing:
         # 필수 항목이 비어 있으면 LLM 이 끝내자고 하거나 업종별 질문으로 넘어가도 필수 항목을 묻는다.
-        # (가격을 되묻는 것처럼 채워진 항목을 다시 묻는 건 LLM 판단을 따른다)
-        if not say or llm_finish or next_asking == "extra":
+        if not say or llm_finish or next_asking == "extra" or next_asking not in REQUIRED:
             next_asking = missing[0]
-            say = f"{_echo(asking, new)} {_register_question(next_asking, new)}"
-    elif used_llm and not llm_finish and extra_asked < MAX_EXTRA and say:
-        next_asking, extra_asked = "extra", extra_asked + 1
+            say = f"{_echo(asking, new)} {_register_question(next_asking, new)}".strip()
+    elif used_llm and not llm_finish and extra_asked < MAX_EXTRA and say and next_asking == "extra":
+        extra_asked += 1
     else:
         finish = True
-    iv.state = {**st, "draft": new, "needs_check": list(dict.fromkeys(needs)), "asking": next_asking, "extra_asked": extra_asked}
-    return say or "", finish
+    if not finish and next_asking:
+        asked[next_asking] = asked.get(next_asking, 0) + 1
+    state = {"draft": new, "needs_check": list(dict.fromkeys(needs)), "asking": next_asking, "extra_asked": extra_asked, "asked": asked}
+    iv.state = {**st, **state}
+    return _LEAD_FILLER.sub("", say or ""), finish
 
 
 def sync_session(db: Session, iv: Interview) -> OnboardingSession:
@@ -605,11 +640,11 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
     finish = (llm_finish and enough) or nxt is None or (repeat and enough)
     if not finish and (not say or llm_finish or repeat):
         asking = nxt
-        say = f"네. {STORY_QUESTIONS[nxt]}"
+        say = STORY_QUESTIONS[nxt]
     if not finish and asking in STORY_BEATS:
         asked[asking] = asked.get(asking, 0) + 1
     iv.state = {**st, "covered": covered, "anecdote": anecdote, "asking": asking, "asked": asked}
-    return say or "", finish
+    return _LEAD_FILLER.sub("", say or ""), finish
 
 
 def _exact_span(transcript: str, quote: str) -> str | None:

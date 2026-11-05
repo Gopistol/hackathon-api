@@ -89,7 +89,10 @@ _PROFILE_TEXT = "\n".join(
 
 _SPOKEN_RULES = """
 "say" is read aloud by text-to-speech to an elderly merchant on what feels like a phone call:
-- ONE short spoken Korean utterance, at most ~70 characters: a brief, warm echo of what you heard + exactly ONE question.
+- ONE short spoken Korean utterance, at most ~50 characters: an optional echo of ONE key word (a few characters) + exactly ONE question.
+- The app already played a filler ("네, 잘 들었어요.") before you speak, so do NOT start with 네/아/음 and do not thank them each turn.
+- Do not read back everything they said and do not ask confirmation questions ("맞죠?", "맞으세요?", "~하신 거죠?").
+  Anything uncertain goes to needs_check; the merchant checks it on the summary screen. Just move on to the next question.
 - Plain words, polite 존댓말, no emoji, no lists, no markdown. Say prices the way people talk ("4천 원").
 - Never ask two things at once.
 - Echo ONLY words the merchant actually said (in "answer" or "history"). Never add years, prices, names or places
@@ -107,7 +110,7 @@ Input JSON: "draft" (what we know so far), "needs_check" (open items), "asking" 
 "extra_asked" (how many extra questions were asked).
 
 Return ONLY a JSON object, no markdown:
-{{"say": str, "asking": str, "finish": bool,
+{{"say": str, "asking": str, "finish": bool, "remove_items": [names the merchant said they no longer sell],
  "updates": {{only the fields that changed in this answer, from:
    "store_name": str, "category": str,
    "items": [{{"name_ko": str, "price": int|null, "unit": str|null, "spicy_level": 0-3|null, "is_ai_guess": bool}}],
@@ -116,7 +119,9 @@ Return ONLY a JSON object, no markdown:
 
 Rules for "updates":
 - Output ONLY fields that this answer adds or changes; omit everything else (use {{}} if nothing changed). Keep it short.
-- "items" and "extras", when present, replace the whole list/object, so include earlier entries that still apply.
+- "items": only items mentioned in THIS answer (new ones or changed price/unit); earlier items are kept automatically.
+  One entry per item, the item name only in name_ko ("떡볶이", not "떡볶이 1인분"); size/amount goes to unit.
+- "extras", when present, replaces the whole object, so include earlier entries that still apply.
 - When the merchant corrects something ("아니 5천 원이야"), output the corrected field.
 - Never invent facts. Every value must come from the merchant's own words in "answer" or "history".
   Do not fill a field from the category alone (e.g. no payment or hours because "most shops do").
@@ -133,7 +138,11 @@ Rules for "updates":
 
 Interview flow:
 - Required, in this order: store_name, category, items (at least one with a price), payment, hours.
-  Ask for the first missing one. Ask about foreign cards if payment did not mention them.
+  Ask for the first missing one. Record everything an answer contains, even if it answers a later question.
+- items: ask for the main items with prices in one question. If some prices are missing, ask only those prices once
+  ("순대 가격은 얼마예요?"). Do not ask "다른 메뉴도 있으세요?".
+- Never ask again for a field that is already filled in "draft". If an answer still does not give a required field
+  after you asked twice, move on and add it to needs_check.
 - After all required are known, ask at most 2 category-specific questions (extras), then finish.
 - "asking" names the topic of your next question: store_name | category | items | payment | hours | extra.
 - Finish (finish=true) when done, or when the merchant wants to stop. Then "say" is a short thank-you that tells them

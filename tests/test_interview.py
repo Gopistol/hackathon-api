@@ -195,3 +195,29 @@ def test_browser_captions_are_used_when_server_stt_fails(client) -> None:
     finally:
         app.dependency_overrides.pop(get_llm)
     assert out["heard"] and out["transcript"] == "영천 떡집이에요" and out["draft"]["store_name"] == "영천 떡집"
+
+
+def test_items_merge_and_missing_prices_are_asked_once(client) -> None:
+    iid = client.post(BASE, json={"kind": "register"}).json()["interview_id"]
+    client.post(f"{BASE}/{iid}/turns", data={"text": "영천 분식이에요"})
+    client.post(f"{BASE}/{iid}/turns", data={"text": "분식집이에요"})
+    replies = [
+        {"say": "결제는 어떻게 받으세요?", "asking": "payment", "finish": False,
+         "updates": {"items": [{"name_ko": "떡볶이", "price": 4000}, {"name_ko": "순대", "price": None}]}, "needs_check": []},
+        # LLM 이 이번 답의 메뉴만 보내도 떡볶이는 남아야 한다
+        {"say": "결제는 어떻게 받으세요?", "asking": "payment", "finish": False,
+         "updates": {"items": [{"name_ko": "어묵", "price": 1000}]}, "needs_check": []},
+        {"say": "순대 가격은 얼마예요?", "asking": "items", "finish": False, "updates": {}, "needs_check": []},
+    ]  # fmt: skip
+    fake = FakeLLM(replies)
+    app.dependency_overrides[get_llm] = lambda: fake
+    try:
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "떡볶이 4천 원, 순대 팔아요"}).json()
+        assert out["say_ko"] == "순대 가격은 얼마예요?"  # 결제로 넘어가기 전에 빠진 가격을 한 번 묻는다
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "어묵도 있어요 천 원"}).json()
+        assert [m["name_ko"] for m in out["draft"]["items"]] == ["떡볶이", "순대", "어묵"]
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "음 그건 그때그때 달라요"}).json()
+    finally:
+        app.dependency_overrides.pop(get_llm)
+    assert "결제" in out["say_ko"]  # 가격은 두 번 물었으니 확인 목록으로 넘기고 다음 질문
+    assert any("순대" in n for n in client.get(f"{BASE}/{iid}").json()["needs_check"])

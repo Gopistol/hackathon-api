@@ -176,7 +176,7 @@ async function handle(out) {
   if (pendingBubble) { if (out.transcript) { pendingBubble.textContent = out.transcript; pendingBubble.className = "me"; } else pendingBubble.remove(); pendingBubble = null; }
   else if (out.transcript) say("me", out.transcript);
   say("ai", out.say_ko);
-  await speak(out.say_ko, out.audio_url);
+  await speak(out.say_ko, (out.audio && (await out.audio)) || out.audio_url);
   if (out.done || stopped) return finish();
   loop();
 }
@@ -184,7 +184,12 @@ async function handle(out) {
 async function send(form, filler = Promise.resolve()) {
   form.append("turn", turn);
   status("💭 생각하는 중…");
-  const request = fetch(`${API}/interviews/${iv}/turns`, { method: "POST", body: form }).then(async (r) => ({ ok: r.ok, out: await r.json() }));
+  // 답이 오면 맞장구가 끝나기를 기다리지 않고 바로 다음 질문 음성을 받기 시작한다 (말 사이 간격 줄이기)
+  const request = fetch(`${API}/interviews/${iv}/turns`, { method: "POST", body: form }).then(async (r) => {
+    const out = await r.json();
+    if (r.ok && out.audio_url) out.audio = fetch(out.audio_url).then((a) => (a.ok ? a.blob() : null)).then((b) => (b ? URL.createObjectURL(b) : null)).catch(() => null);
+    return { ok: r.ok, out };
+  });
   const [{ ok, out }] = await Promise.all([request, filler]);  // 맞장구가 끝나야 다음 말을 한다
   if (!ok) {
     if (pendingBubble) { pendingBubble.remove(); pendingBubble = null; }
