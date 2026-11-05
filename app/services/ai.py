@@ -84,7 +84,9 @@ async def complete_json(llm: LLMProvider, system: str, user: str) -> dict:
 
 _ENDINGS = re.compile(r"\s*(이라고 해요|라고 해요|이에요|예요|입니다|이요|요|임)?[.!~\s]*$")
 _KO_DIGIT = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
-_PRICE_RE = re.compile(r"(\d[\d,]*)\s*(만|천)?\s*원|([일이삼사오육칠팔구]?)\s*(만|천)\s*원")
+_N = r"(?:\d+|[일이삼사오육칠팔구])?"
+_PRICE_RE = re.compile(r"(?P<num>\d[\d,]*)\s*원|(?P<ko>(?:%s\s*만)?\s*(?:%s\s*천)?\s*(?:%s\s*백)?)\s*원" % (_N, _N, _N))
+_UNIT_RE = re.compile(r"(\d+|[일이삼사오육칠팔구])?\s*(만|천|백)")
 _HOUR_WORDS = {"열두": 12, "열한": 11, "열": 10, "아홉": 9, "여덟": 8, "일곱": 7, "여섯": 6, "다섯": 5, "네": 4, "세": 3, "두": 2, "한": 1}
 _HOUR_RE = re.compile(r"(아침|오전|낮|오후|저녁|밤)?\s*(\d{1,2}|" + "|".join(_HOUR_WORDS) + r")\s*시")
 
@@ -93,12 +95,15 @@ def _clean(text: str) -> str:
     return _ENDINGS.sub("", " ".join(text.split()))
 
 
-def _price(m: re.Match) -> int:
-    if m.group(1):
-        n, unit = int(m.group(1).replace(",", "")), m.group(2)
-    else:
-        n, unit = _KO_DIGIT.get(m.group(3), 1), m.group(4)
-    return n * {"만": 10000, "천": 1000}.get(unit or "", 1)
+def _price(m: re.Match) -> int | None:
+    """"4,000원", "4천원", "사천 원", "만 오천 원", "1만5천원" → 정수. 숫자가 없으면 None."""
+    if m.group("num"):
+        return int(m.group("num").replace(",", ""))
+    total = 0
+    for n, unit in _UNIT_RE.findall(m.group("ko") or ""):
+        count = int(n) if n.isdigit() else _KO_DIGIT.get(n, 1)
+        total += count * {"만": 10000, "천": 1000, "백": 100}[unit]
+    return total or None
 
 
 def _rule_store_name(text: str) -> tuple[dict, list[str]]:
@@ -106,21 +111,41 @@ def _rule_store_name(text: str) -> tuple[dict, list[str]]:
     return {"name_ko": name[:100], "address": None}, ([] if name else ["가게 이름"])
 
 
+_SEP_RE = re.compile(r"[,，、/·]|그리고|하고|랑\s|이고\s|이며\s")
+_CONNECTORS = {"", "이", "고", "요", "이요", "이고", "랑", "이랑", "그리고", "하고", "및", "또"}
+
+
+def _menu_name(raw: str) -> str:
+    name = re.sub(r"\s*(한|1)\s*(그릇|줄|인분|개|접시|꼬치|봉지)\s*$", "", raw.strip())
+    name = re.sub(r"\s*(은|는|가|도|에)\s*$", "", name).strip()  # "이"는 떡볶이처럼 이름 끝일 수 있어 빼지 않는다
+    name = re.sub(r"^(이고|이요|이랑|이며|그리고|하고|요|고)\s+", "", _clean(name))
+    name = re.sub(r"\s*(도\s*)?(있어|있고|있습니다|팔아|팔고|팔아요|있어요)$", "", name).strip()
+    return "" if name in _CONNECTORS or not re.search(r"[가-힣A-Za-z]", name) or len(name) > 30 else name
+
+
 def _rule_menus(text: str) -> tuple[dict, list[str]]:
+    """가격을 먼저 찾고, 가격 바로 앞 말을 메뉴 이름으로 본다. 가격 없는 이름은 price None."""
     menus, needs = [], []
-    for chunk in re.split(r"[,，、/·]|그리고|이랑|하고", text):
-        m = _PRICE_RE.search(chunk)
-        name = chunk[: m.start()] if m else chunk
-        name = re.sub(r"\s*(한|1)\s*(그릇|줄|인분|개|접시|꼬치|봉지)\s*$", "", name.strip())
-        name = re.sub(r"\s*(은|는|가|도|에)\s*$", "", name).strip()  # "이"는 떡볶이처럼 이름 끝일 수 있어 빼지 않는다
-        name = _clean(name)
-        if not re.search(r"[가-힣A-Za-z]", name) or len(name) > 30:
-            continue
-        price = _price(m) if m else None
+
+    def add(raw: str, price: int | None) -> None:
+        if not (name := _menu_name(raw)):
+            return
         if price is None:
             needs.append(f"{name} 가격")
         entry = glossary_entry(name)
         menus.append({"name_ko": name, "price": price, "spicy_level": entry["spicy"] if entry else 0, "is_ai_guess": True})
+
+    pos = 0
+    for m in _PRICE_RE.finditer(text):
+        if (price := _price(m)) is None:
+            continue
+        parts = _SEP_RE.split(text[pos : m.start()])
+        for part in parts[:-1]:
+            add(part, None)
+        add(parts[-1], price)
+        pos = m.end()
+    for part in _SEP_RE.split(text[pos:]):
+        add(part, None)
     if not menus:
         needs.append("메뉴와 가격")
     return {"menus": menus}, needs
@@ -220,6 +245,20 @@ def normalize(step: str, data: dict) -> dict:
     raise ValueError(step)
 
 
+def _cross_check_menus(menus: list[dict], transcript: str, needs: list[str]) -> None:
+    """LLM 이 숫자를 틀리는 경우가 있어("사천 원" → 3000) 규칙 기반 결과와 비교한다.
+    가격이 다르면 규칙 값을 쓰고 확인 요청. AI 가 추측한 맵기는 용어집 값을 우선한다."""
+    rule = {m["name_ko"].replace(" ", ""): m for m in _rule_menus(transcript)[0]["menus"]}
+    for m in menus:
+        r = rule.get(m["name_ko"].replace(" ", ""))
+        if r and r["price"] is not None and r["price"] != m["price"]:
+            needs.append(f"{m['name_ko']} 가격 ({r['price']:,}원 맞는지)")
+            m["price"] = r["price"]
+        entry = glossary_entry(m["name_ko"])
+        if m["is_ai_guess"] and entry:
+            m["spicy_level"] = entry["spicy"]
+
+
 async def structure_step(llm: LLMProvider, step: str, transcript: str) -> tuple[dict, list[str]]:
     if is_mock(llm):
         return _RULES[step](transcript)
@@ -232,6 +271,7 @@ async def structure_step(llm: LLMProvider, step: str, transcript: str) -> tuple[
         parsed, needs = _RULES[step](transcript)
         needs = ["AI 정리에 실패해서 말씀하신 그대로 정리했어요. 확인해 주세요.", *needs]
     if step == "menus":
+        _cross_check_menus(parsed["menus"], transcript, needs)
         for m in parsed["menus"]:
             if m["price"] is None and not any(m["name_ko"] in n for n in needs):
                 needs.append(f"{m['name_ko']} 가격")

@@ -5,7 +5,7 @@ You turn a Korean traditional-market merchant's spoken answer (speech-to-text tr
 into JSON for a store registration form. Return ONLY a JSON object, no markdown.
 Never invent facts. If a value is unclear, missing, or you are guessing, leave it null (or omit it)
 and add a short Korean note to "needs_check" (e.g. "해외카드 가능 여부", "순대 가격").
-Convert Korean number words to integers in KRW ("사천 원", "4천원" -> 4000).
+Convert Korean number words to integers in KRW exactly: 천=1000, 이천=2000, 삼천=3000, 사천=4000, 오천=5000, 만=10000 ("사천 원" -> 4000, "4천원" -> 4000, "만 오천 원" -> 15000).
 """.strip()
 
 STRUCTURE_SCHEMAS = {

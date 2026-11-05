@@ -120,3 +120,12 @@ def test_settings_repr_hides_key(monkeypatch) -> None:
     from app.core.config import Settings
 
     assert FAKE_KEY not in repr(Settings())
+
+
+def test_llm_wrong_price_is_corrected_by_rules(provider, monkeypatch) -> None:
+    out = json.dumps({"menus": [{"name_ko": "기름떡볶이", "price": 3000, "spicy_level": 3, "is_ai_guess": True}]})
+    monkeypatch.setattr(provider._client.responses, "create", _fake(_text(out)))
+    parsed, needs = asyncio.run(ai.structure_step(provider, "menus", "기름떡볶이 사천 원이요"))
+    assert parsed["menus"][0]["price"] == 4000
+    assert parsed["menus"][0]["spicy_level"] == 1  # 용어집 값
+    assert any("4,000원" in n for n in needs)
