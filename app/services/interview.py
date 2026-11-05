@@ -39,6 +39,7 @@ MAX_TURNS = {"register": 12, "story": 8}
 MIN_STORY_TURNS = 3
 MAX_ASK_PER_BEAT = 2
 MAX_ASK_PER_FIELD = 2  # 가게 등록도 한 항목은 두 번까지만 묻고, 못 들으면 요약 화면 확인 목록으로 넘긴다
+STT_BUDGET = 6.0  # 초. 음성 인식이 늦으면 브라우저가 받아 적은 글을 쓰거나 다시 묻는다 (오래 조용하지 않게)
 TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가 끊긴 느낌이 들지 않게)
 TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
@@ -52,6 +53,8 @@ CLOSING = {
     "story": "귀한 이야기 고맙습니다. 이 이야기로 영상을 만들어 드릴게요.",
 }
 REPROMPT = "잘 못 들었어요. 한 번만 더 말씀해 주세요."
+# 연달아 못 알아들으면 말하는 방법을 알려 준다
+REPROMPT_AGAIN = "잘 안 들려요. 휴대폰을 입 가까이 대고 천천히 말씀해 주세요."
 # 말이 끝나자마자 프론트가 바로 틀어 주는 짧은 맞장구 (다음 질문을 기다리는 동안 조용하지 않게).
 # "네~"처럼 너무 짧으면 음성 합성이 다른 나라 말처럼 읽는 경우가 있어 한 마디 이상으로 둔다.
 FILLERS = ["네, 잘 들었어요.", "아, 그러시구나.", "네, 알겠어요."]
@@ -256,7 +259,10 @@ async def turn(
             if ai.is_mock(llm):
                 transcript = MOCK_ANSWERS.get(asking, "네")
             else:
-                transcript = await ai.transcribe(llm, audio, filename, "story", _stt_hint(db, iv))
+                transcript = await asyncio.wait_for(ai.transcribe(llm, audio, filename, "story", _stt_hint(db, iv)), STT_BUDGET)
+        except TimeoutError:
+            logger.warning("인터뷰 음성 인식 시간 초과")
+            transcript = ""
         except AppError as e:
             if e.code != "STT_FAILED":
                 raise
@@ -269,9 +275,12 @@ async def turn(
         transcript = ""  # 스피커로 나간 AI 질문이 마이크로 다시 들어온 것
     if not transcript:
         # 통화가 끊기지 않게 에러 대신 다시 묻는다
-        out = _out(iv, llm, f"{REPROMPT} {iv.state.get('last_say', '')}".strip(), heard=False)
+        misses = iv.state.get("misses", 0) + 1
+        iv.state = {**iv.state, "misses": misses}
+        out = _out(iv, llm, f"{REPROMPT_AGAIN if misses >= 2 else REPROMPT} {iv.state.get('last_say', '')}".strip(), heard=False)
         db.commit()
         return out
+    iv.state = {**iv.state, "misses": 0}
 
     iv.turns = [*iv.turns, {"question": iv.state.get("last_say", ""), "transcript": transcript, "audio_path": audio_path}]
     if _STOP_RE.search(transcript):

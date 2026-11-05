@@ -190,7 +190,12 @@ async function send(form, filler = Promise.resolve()) {
     if (r.ok && out.audio_url) out.audio = fetch(out.audio_url).then((a) => (a.ok ? a.blob() : null)).then((b) => (b ? URL.createObjectURL(b) : null)).catch(() => null);
     return { ok: r.ok, out };
   });
-  const [{ ok, out }] = await Promise.all([request, filler]);  // 맞장구가 끝나야 다음 말을 한다
+  let ok, out;
+  try {
+    [{ ok, out }] = await Promise.all([request, filler]);  // 맞장구가 끝나야 다음 말을 한다
+  } catch (e) {  // 인터넷이 잠깐 끊겨도 통화가 멈추지 않게 다시 듣는다
+    ok = false; out = { error: { message: "연결이 잠깐 끊겼어요. 다시 말씀해 주세요" } };
+  }
   if (!ok) {
     if (pendingBubble) { pendingBubble.remove(); pendingBubble = null; }
     status(out.error?.message || "오류가 났어요. 다시 들을게요");
@@ -226,7 +231,11 @@ async function finish() {
 
 $("start").onclick = async () => {
   // 첫 탭에서 마이크와 소리 재생을 허락받는다 (iOS 자동 재생 제한)
-  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) {
+    return status("마이크를 쓸 수 있게 허용해 주세요 (주소창 옆 자물쇠 → 마이크 허용)");
+  }
   ctx = new AudioContext(); analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
   ctx.createMediaStreamSource(stream).connect(analyser);
   player.src = silentWav();
