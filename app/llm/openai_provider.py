@@ -43,11 +43,15 @@ class OpenAIProvider:
         timeout: float,
         stt_model: str = "gpt-4o-mini-transcribe",
         max_retries: int = 0,
+        tts_model: str = "gpt-4o-mini-tts",
+        tts_voice: str = "coral",
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=max_retries)
         self._model = model
         self._max_output_tokens = max_output_tokens
         self._stt_model = stt_model
+        self._tts_model = tts_model
+        self._tts_voice = tts_voice
 
     def _params(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> dict:
         return {
@@ -91,3 +95,17 @@ class OpenAIProvider:
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
         return result.text
+
+    async def speak(self, text: str) -> bytes:
+        """한국어 문장 → mp3. 사장님 등록 화면에서 질문을 소리로 읽어 줄 때 쓴다."""
+        try:
+            result = await self._client.audio.speech.create(
+                model=self._tts_model,
+                voice=self._tts_voice,
+                input=text,
+                instructions="어르신께 말하듯 또박또박, 조금 천천히, 친절하고 따뜻하게 한국어로 말하세요.",
+                response_format="mp3",
+            )
+        except openai.OpenAIError as e:
+            raise _to_llm_error(e) from e
+        return result.content

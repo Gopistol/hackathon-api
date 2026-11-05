@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = "gpt-4.1-mini"
     openai_stt_model: str = "gpt-4o-mini-transcribe"
+    # 등록 질문·확인 문장을 소리로 읽어 주는 음성 합성(TTS)
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "coral"
+    # ElevenLabs 가 있으면 등록 음성은 이쪽을 먼저 쓴다 (한국어가 더 자연스럽다). 없거나 실패하면 OpenAI.
+    # 목소리는 이 키의 계정 Voice Library 에 추가돼 있어야 한다. 기본값은 "Sora - Warm & Expressive".
+    elevenlabs_api_key: SecretStr = SecretStr("")
+    elevenlabs_tts_voice_id: str = "JpGoUJuLFthrFkcdBy4k"
+    elevenlabs_tts_model: str = "eleven_multilingual_v2"
     openai_max_output_tokens: int = 2048
     # 데모용으로 짧게. 실패하면 단계마다 대체 동작이 있으므로 SDK 재시도는 기본 0회.
     openai_timeout: float = 15.0  # 초

@@ -3,11 +3,13 @@
 import asyncio
 import shutil
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Path, Request, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ERROR_RESPONSES, AppError, not_found
+from app.llm import LLMError
 from app.db.session import get_db
 from app.llm import LLMProvider, get_llm
 from app.models import Menu, Store, Video
@@ -24,7 +26,7 @@ from app.schemas.merchant import (
     StorePatch,
     SummaryOut,
 )
-from app.services import onboarding, video
+from app.services import onboarding, tts, video
 from app.services.ai import MAX_SCRIPT_LINES, audio_ext, split_script
 from app.services.i18n import LANGS
 
@@ -46,10 +48,11 @@ async def _read_limited(f: UploadFile, limit: int, what: str) -> bytes:
 
 
 @router.post("/onboarding/sessions", response_model=QuestionOut, summary="등록 세션 시작")
-def start_session(body: SessionStartIn | None = None, db: Session = Depends(get_db)):
+def start_session(body: SessionStartIn | None = None, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
     body = body or SessionStartIn()
     s = onboarding.start(db, body.store_id, body.market_id)
-    return {"session_id": s.id, **onboarding.question(s.step)}
+    q = onboarding.question(s.step)
+    return {"session_id": s.id, **q, "audio_url": tts.audio_url(llm, q["question_ko"])}
 
 
 @router.post("/onboarding/sessions/{session_id}/answers", response_model=AnswerOut, summary="답변 제출 (음성 또는 텍스트)")
@@ -64,7 +67,8 @@ async def submit_answer(
     data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일") if audio else None
     if not data and not (text and text.strip()):
         raise AppError("VALIDATION_ERROR", "audio 또는 text 중 하나를 보내 주세요.", 422)
-    return await onboarding.answer(db, llm, s, data, audio.filename if audio else "", text)
+    result = await onboarding.answer(db, llm, s, data, audio.filename if audio else "", text)
+    return {**result, "confirm_audio_url": tts.audio_url(llm, result["confirm_text_ko"])}
 
 
 @router.post("/onboarding/sessions/{session_id}/confirm", response_model=ConfirmOut, summary="확인 (맞아요/다시)")
@@ -79,7 +83,24 @@ def confirm(
     result = onboarding.confirm(db, s, body.step, body.accepted, body.edits)
     if result["done"]:
         background.add_task(onboarding.prefetch_translations, s.id, llm)
-    return result
+    return {**result, "audio_url": tts.audio_url(llm, result["question_ko"])}
+
+
+@router.get(
+    "/tts/{key}.mp3",
+    response_class=FileResponse,
+    summary="질문·확인 문장 음성 (audio_url 로 받은 주소)",
+    responses={200: {"content": {"audio/mpeg": {}}}},
+)
+async def tts_audio(key: str = Path(pattern=r"^[0-9a-f]{20}$"), llm: LLMProvider = Depends(get_llm)):
+    try:
+        path = await tts.audio_file(llm, key)
+    except LLMError as e:
+        raise AppError("TTS_FAILED", "음성을 만들지 못했어요. 글자로 보여 드릴게요.", 503) from e
+    if path is None:
+        raise not_found("음성")
+    # 같은 주소는 항상 같은 음성이라 브라우저가 오래 저장해도 된다.
+    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/onboarding/sessions/{session_id}/summary", response_model=SummaryOut, summary="전체 요약")

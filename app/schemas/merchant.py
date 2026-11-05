@@ -15,6 +15,7 @@ class QuestionOut(BaseModel):
     step: str
     question_ko: str | None
     example_ko: str | None
+    audio_url: str | None = Field(None, description="question_ko 를 읽어 주는 mp3 주소. mock·실패 시 null (글자만 보여 주기)")
 
 
 class AnswerOut(BaseModel):
@@ -27,6 +28,7 @@ class AnswerOut(BaseModel):
     )
     needs_check: list[str]
     confirm_text_ko: str
+    confirm_audio_url: str | None = Field(None, description="confirm_text_ko 를 읽어 주는 mp3 주소. mock·실패 시 null")
     mode: str
 
 
