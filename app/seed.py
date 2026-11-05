@@ -89,6 +89,9 @@ def offset(market: Market, index: int) -> tuple[float, float]:
 def seed() -> None:
     init_db()
     media = get_settings().media_path
+    # 음식 사진은 DB와 상관없어서 매번 복사한다 (리셋 없이 배포만으로 반영)
+    if (DEMO / "foods").exists():
+        shutil.copytree(DEMO / "foods", media / "foods", dirs_exist_ok=True)
     with SessionLocal() as db:
         if db.scalar(select(Market.id).limit(1)):
             return

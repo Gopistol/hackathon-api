@@ -20,6 +20,7 @@ from app.schemas.customer import (
     StorePin,
     VideoDetail,
 )
+from app.seed_data import FOOD_PHOTOS
 from app.services.i18n import SIMILAR_FOODS, Lang, food_name, load_translations
 from app.services.maps import directions_url
 from app.services.views import (
@@ -206,6 +207,11 @@ def _stores_selling(db: Session, food_ko: str, lang: str) -> list[dict]:
     return [store_card(db, s, lang) for s in stores]
 
 
+def _food_photo(food_ko: str) -> str | None:
+    name = FOOD_PHOTOS.get(food_ko)
+    return media_url(f"foods/{name}.jpg") if name else None
+
+
 @router.get("/contents/{content_id}/foods", response_model=ContentFoodsOut, summary="작품 음식 → 가게 (P1)")
 def content_foods(content_id: int, lang: Lang = LangQ, db: Session = Depends(get_db)):
     c = db.get(Content, content_id)
@@ -218,8 +224,8 @@ def content_foods(content_id: int, lang: Lang = LangQ, db: Session = Depends(get
         if not stores:
             for alt in SIMILAR_FOODS.get(f, []):
                 if alt_stores := _stores_selling(db, alt, lang):
-                    similar.append({"food_ko": alt, "name": food_name(alt, lang), "stores": alt_stores})
-        foods.append({"food_ko": f, "name": food_name(f, lang), "stores": stores, "similar": similar})
+                    similar.append({"food_ko": alt, "name": food_name(alt, lang), "image_url": _food_photo(alt), "stores": alt_stores})
+        foods.append({"food_ko": f, "name": food_name(f, lang), "image_url": _food_photo(f), "stores": stores, "similar": similar})
     return {
         "content_id": c.id,
         "title": c.title if lang == "ko" else c.title_i18n.get(lang) or c.title,

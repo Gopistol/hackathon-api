@@ -93,6 +93,8 @@ def test_contents(client) -> None:
     assert not foods["라면"]["stores"] and foods["라면"]["similar"][0]["food_ko"] == "라볶이"
     assert foods["국밥"]["stores"]  # 순대국밥 파는 시드 가게로 바로 연결
     assert foods["라면"]["name"].startswith("Ramyeon")
+    for f in [*foods.values(), foods["라면"]["similar"][0]]:  # 음식·비슷한 음식 모두 사진이 있다
+        assert client.get(f["image_url"]).status_code == 200
 
     by_title = {c["title_ko"]: c["content_id"] for c in contents}
     for title, food in [("폭군의 셰프", "비빔밥"), ("흑백요리사 시즌 2", "나물")]:

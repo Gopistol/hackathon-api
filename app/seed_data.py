@@ -142,7 +142,7 @@ STORES = [
     },
 ]
 
-# K-콘텐츠(P1). 이미지는 demo/contents/<key>.jpg (직접 만든 카드 이미지. 포스터·스틸컷은 쓰지 않는다)
+# K-콘텐츠(P1). 이미지는 demo/contents/<key>.jpg (공식 포스터, 시연용)
 CONTENTS = [
     {
         "key": "kpop-demon-hunters",
@@ -177,3 +177,18 @@ CONTENTS = [
         "foods": ["달고나"],
     },
 ]
+
+# 작품 음식·비슷한 음식 사진: demo/foods/<파일>.jpg (Wikimedia Commons, 출처는 demo/foods/CREDITS.txt)
+FOOD_PHOTOS = {
+    "김밥": "gimbap",
+    "라면": "ramyeon",
+    "국밥": "gukbap",
+    "비빔밥": "bibimbap",
+    "나물": "namul",
+    "달고나": "dalgona",
+    "라볶이": "rabokki",
+    "떡볶이": "tteokbokki",
+    "순대": "sundae",
+    "꽈배기": "kkwabaegi",
+    "호떡": "hotteok",
+}
