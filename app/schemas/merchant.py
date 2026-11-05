@@ -124,7 +124,8 @@ class InterviewTurnOut(BaseModel):
     interview_id: int
     kind: str
     turn: int = Field(description="다음 답을 보낼 때 같이 보낼 번호 (중복 전송 방지)")
-    transcript: str | None = Field(description="방금 알아들은 사장님 말")
+    transcript: str | None = Field(description="방금 알아들은 사장님 말. AI 가 인식 오류·군말을 다듬은 완전한 문장 (못 다듬으면 인식된 그대로)")
+    transcript_raw: str | None = Field(None, description="음성 인식이 받아 적은 그대로의 글")
     heard: bool = Field(description="false 면 못 알아들어서 같은 질문을 다시 한다")
     say_ko: str = Field(description="AI 가 할 말 (맞장구 + 다음 질문, 끝이면 마무리 인사)")
     audio_url: str | None = Field(description="say_ko 음성. 받자마자 재생하고 끝나면 바로 듣기 시작. mock·실패 시 null")
@@ -146,7 +147,7 @@ class InterviewOut(BaseModel):
     kind: str
     status: Literal["active", "done", "published"]
     store_id: int | None
-    turns: list[dict] = Field(description="[{question, transcript}]")
+    turns: list[dict] = Field(description="[{question, transcript(다듬은 글), transcript_raw(인식된 그대로)}]")
     draft: dict | None
     needs_check: list[str]
     session_id: int | None = Field(

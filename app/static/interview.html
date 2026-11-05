@@ -197,10 +197,10 @@ let pendingBubble = null;
 
 async function handle(out) {
   iv = out.interview_id; turn = out.turn;
-  // 실시간으로 받아 적은 글은 그대로 둔다 (서버 인식과 다르면 AI 가 둘을 같이 보고 판단한다)
+  // 말하는 동안 보이던 받아쓰기 글을 AI 가 다듬은 완전한 문장으로 바꾼다 (못 알아들었으면 지운다)
   if (pendingBubble) {
     if (!out.heard) pendingBubble.remove();
-    else { if (!pendingBubble.textContent) pendingBubble.textContent = out.transcript; pendingBubble.className = "me"; }
+    else { pendingBubble.textContent = out.transcript || pendingBubble.textContent; pendingBubble.className = "me"; }
     pendingBubble = null;
   }
   else if (out.transcript) say("me", out.transcript);
