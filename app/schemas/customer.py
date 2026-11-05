@@ -61,7 +61,7 @@ class FeedItem(BaseModel):
     video_url: str = Field(description="lang 자막이 영상에 들어간 영상 (실시간 생성). 시연 영상은 하나뿐")
     video_urls: dict[str, str] = Field(default_factory=dict, description="언어별 영상 URL. 시연 영상은 비어 있다")
     voice: str | None = Field(
-        None, description="이 영상의 소리: original(사장님 목소리) | clone(사장님 목소리를 AI로 복제한 더빙) | ai(AI 목소리) | none(무음)"
+        None, description="이 영상의 소리: original(사장님 목소리) | clone(사장님 목소리를 AI로 복제한 더빙) | ai(AI 목소리) | narrator(녹음 없이 글을 시장 할머니 목소리로 읽음) | none(무음)"
     )
     thumbnail_url: str | None
     subtitles: dict[str, str] = Field(description="언어별 VTT URL")
@@ -90,7 +90,7 @@ class VideoBrief(BaseModel):
     video_url: str = Field(description="lang 자막이 영상에 들어간 영상 (실시간 생성). 시연 영상은 하나뿐")
     video_urls: dict[str, str] = Field(default_factory=dict, description="언어별 영상 URL. 시연 영상은 비어 있다")
     voice: str | None = Field(
-        None, description="이 영상의 소리: original(사장님 목소리) | clone(사장님 목소리를 AI로 복제한 더빙) | ai(AI 목소리) | none(무음)"
+        None, description="이 영상의 소리: original(사장님 목소리) | clone(사장님 목소리를 AI로 복제한 더빙) | ai(AI 목소리) | narrator(녹음 없이 글을 시장 할머니 목소리로 읽음) | none(무음)"
     )
     thumbnail_url: str | None
     subtitles: dict[str, str]

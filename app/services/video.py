@@ -6,7 +6,8 @@
   시작에 가게 이름, 끝에 메뉴·가격·결제 카드를 넣는다 (DB 값만 쓴다).
 - 소리: 녹음이 있으면 한국어 영상은 사장님 원래 목소리, 외국어 영상은 사장님 목소리를 복제해 더빙한다.
   복제 더빙(ElevenLabs) → AI 기본 목소리(OpenAI) → 원래 목소리 순서로 대체한다.
-  녹음이 없거나 읽을 수 없으면 소리 없는 영상이다.
+  녹음이 없으면(스크립트·가게 정보) 자막 글을 시장 할머니 목소리(ElevenLabs)로 언어마다 읽는다.
+  그것도 안 되면 AI 기본 목소리, 그것도 안 되면 소리 없는 영상이다.
 - 더빙·자막 시간 맞추기·전환 효과 같은 단계는 실패해도 대체해서 이어 간다. 영상은 어떻게든 끝까지 만든다.
 """
 
@@ -264,6 +265,7 @@ async def render(
 # ---------- 더빙 ----------
 
 DUB_INSTRUCTIONS = {
+    "ko": "전통시장에서 수십 년 장사한 할머니처럼 따뜻하고 정겹게, 조금 천천히 한국어로 말하세요.",
     "en": "Speak English as a warm, friendly vendor at a Korean traditional market. Natural and upbeat, medium pace.",
     "zh": "用自然亲切的普通话说话，像韩国传统市场里热情的摊主。语速适中。",
 }
@@ -311,6 +313,20 @@ async def dub(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], 
             voices[lang] = (path, engine)
         else:
             voices[lang] = (voice_ko, "original")
+    return voices
+
+
+async def narrate(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], wd: Path) -> dict:
+    """녹음이 없을 때: 언어마다 자막 글을 시장 할머니 목소리로 읽는다 → {lang: (음성 파일, "narrator"|"ai")}.
+    목소리를 못 만든 언어는 빠지고 소리 없는 영상이 된다."""
+    voice_id = get_settings().elevenlabs_story_voice_id if elevenlabs.enabled() else None
+    results = await asyncio.gather(*(_speak(llm, _spoken(script.get(lang) or script["ko"], lang), lang, voice_id) for lang in langs))
+    voices = {}
+    for lang, (mp3, engine) in zip(langs, results):
+        if mp3:
+            path = wd / f"narration_{lang}.mp3"
+            path.write_bytes(mp3)
+            voices[lang] = (path, "narrator" if engine == "clone" else engine)
     return voices
 
 
@@ -536,6 +552,8 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             voices = {lang: (voice_ko, "original") if voice_ko else (None, "none") for lang in all_langs}
             if voice_ko:
                 voices.update(await _optional("더빙", video_id, dub(llm, script, all_langs[1:], voice_ko, wd), {}))
+            else:
+                voices.update(await _optional("내레이션", video_id, narrate(llm, script, all_langs, wd), {}))
             video.progress = 35
             db.commit()
 
@@ -573,7 +591,7 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                 ass.write_text(subtitles.to_ass(cues, font, length, title, card), encoding="utf-8")
 
                 rel = f"videos/{video_id}.{lang}.mp4"
-                background = voices["ko"][0] if engine == "ai" else None
+                background = voice_ko if engine == "ai" and voice_ko else None  # AI 더빙 뒤에 작게 까는 사장님 원래 목소리
                 ok = await render_any(photos, media / rel, length, video_id, lang, voice=voice, background=background, subtitles_ass=ass)
                 if not ok:
                     if lang == "ko":
