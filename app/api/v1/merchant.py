@@ -1,6 +1,10 @@
 """사장님 API: 음성 대화형 등록, 숏폼 생성, 가게·메뉴 수정(P1)."""
 
+import asyncio
+import shutil
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ERROR_RESPONSES, AppError, not_found
@@ -31,7 +35,8 @@ MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 
 async def _read_limited(f: UploadFile, limit: int, what: str) -> bytes:
-    data = await f.read()
+    # limit+1 바이트까지만 읽어서 큰 파일을 메모리에 다 올리지 않는다.
+    data = await f.read(limit + 1)
     if len(data) > limit:
         raise AppError("UPLOAD_TOO_LARGE", f"{what}은(는) {limit // 1024 // 1024}MB 이하만 올릴 수 있어요.", 413)
     return data
@@ -111,12 +116,15 @@ async def create_video(
     wd = video.work_dir(v.id)
     try:
         for i, f in enumerate(photos):
-            video.prepare_photo(await _read_limited(f, MAX_PHOTO_BYTES, "사진"), wd / f"photo_{i}.jpg")
+            data = await _read_limited(f, MAX_PHOTO_BYTES, "사진")
+            # 디코딩은 무거워서 이벤트 루프 밖에서 한다.
+            await asyncio.to_thread(video.prepare_photo, data, wd / f"photo_{i}.jpg")
         if audio:
             data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일")
             if data:
                 (wd / f"audio.{audio_ext(data)}").write_bytes(data)
     except AppError:
+        shutil.rmtree(wd, ignore_errors=True)
         db.delete(v)
         db.commit()
         raise
@@ -135,7 +143,13 @@ def job_status(job_id: int, db: Session = Depends(get_db)):
         "progress": v.progress,
         "video_id": v.id if v.job_status == "done" else None,
         "error": v.error,
+        "fallback_video_id": _fallback_video(db, v) if v.job_status == "failed" else None,
     }
+
+
+def _fallback_video(db: Session, failed: Video) -> int | None:
+    done = select(Video.id).where(Video.job_status == "done").order_by(Video.id.desc()).limit(1)
+    return db.scalar(done.where(Video.store_id == failed.store_id)) or db.scalar(done)
 
 
 # ---------- P1: 수정 ----------

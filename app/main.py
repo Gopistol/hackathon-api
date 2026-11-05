@@ -13,6 +13,9 @@ from app.core.errors import register_error_handlers
 from app.services.video import fail_stuck_jobs
 
 logging.basicConfig(level=logging.INFO)
+# httpx 는 INFO 에서 요청 URL 을 쿼리째 남긴다. Geocoding 키가 URL 에 들어가므로 끈다.
+for name in ("httpx", "httpcore"):
+    logging.getLogger(name).setLevel(logging.WARNING)
 settings = get_settings()
 settings.media_path.mkdir(parents=True, exist_ok=True)
 

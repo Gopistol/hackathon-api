@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Step = Literal["store_name", "menus", "payment", "hours", "story"]
 
@@ -71,6 +71,9 @@ class JobStatus(BaseModel):
     progress: int
     video_id: int | None
     error: str | None
+    fallback_video_id: int | None = Field(
+        description="failed 일 때 대신 보여줄 영상(같은 가게의 기존 영상, 없으면 최신 시연 영상)"
+    )
 
 
 class StorePatch(BaseModel):
@@ -80,8 +83,23 @@ class StorePatch(BaseModel):
     hours: str | None = Field(None, max_length=200)
     story_ko: str | None = Field(None, max_length=1000)
 
+    # 생략은 "안 바꿈", 명시적 null 은 거절. address 만 null 로 지울 수 있다.
+    @field_validator("name", "payment", "hours", "story_ko")
+    @classmethod
+    def _not_null(cls, v):
+        if v is None:
+            raise ValueError("null 로 바꿀 수 없어요. 바꾸지 않으려면 필드를 빼 주세요.")
+        return v
+
 
 class MenuPatch(BaseModel):
     name_ko: str | None = Field(None, min_length=1, max_length=100)
-    price: int | None = Field(None, ge=0)
+    price: int | None = Field(None, ge=0, description="null 이면 가격 미정")
     spicy_level: int | None = Field(None, ge=0, le=3)
+
+    @field_validator("name_ko", "spicy_level")
+    @classmethod
+    def _not_null(cls, v):
+        if v is None:
+            raise ValueError("null 로 바꿀 수 없어요. 바꾸지 않으려면 필드를 빼 주세요.")
+        return v

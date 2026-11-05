@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 W, H, FPS = 720, 1280, 30
 TOTAL_SECONDS = 15.0
-RENDER_TIMEOUT = 120
+RENDER_TIMEOUT = 60
+MAX_PIXELS = 48_000_000  # 8000x6000. 디코딩 메모리(RGB 약 144MB)를 서버 600MB 안에 둔다
+STT_BUDGET = 10  # 초. 영상 자막용 음성 인식이 늦으면 건너뛴다
+SCRIPT_BUDGET = 12  # 초. 자막 생성이 늦으면 템플릿 문장을 쓴다
 ROOT = Path(__file__).resolve().parents[2]
 BGM_PATH = ROOT / "demo" / "bgm.mp3"  # 있으면 음성 없는 영상에 깐다
 
@@ -49,9 +52,12 @@ def work_dir(video_id: int) -> Path:
 def prepare_photo(data: bytes, dst: Path) -> None:
     """회전 보정 후 1080x1920 으로 가운데 잘라 JPEG 저장. 이미지가 아니면 AppError."""
     try:
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(data))  # 여기까지는 헤더만 읽는다
+        if img.width * img.height > MAX_PIXELS:
+            raise AppError("IMAGE_TOO_LARGE", "사진 해상도가 너무 커요. 4800만 화소 이하로 올려 주세요.", 413)
+        img.draft("RGB", (1080, 1920))  # JPEG 는 필요한 크기로 줄여서 디코딩해 메모리를 아낀다
         img = ImageOps.exif_transpose(img).convert("RGB")
-    except (UnidentifiedImageError, OSError) as e:
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise AppError("INVALID_IMAGE", "사진 파일을 읽을 수 없어요. JPG나 PNG로 올려 주세요.", 422) from e
     img = ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -183,12 +189,19 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             transcript = ""
             if audio and not ai.is_mock(llm):
                 try:
-                    transcript = await ai.transcribe(llm, audio.read_bytes(), audio.name, "story")
-                except AppError:
+                    transcript = await asyncio.wait_for(
+                        ai.transcribe(llm, audio.read_bytes(), audio.name, "story"), STT_BUDGET
+                    )
+                except (AppError, TimeoutError):
                     pass  # 자막은 가게 정보만으로도 만든다
             store = db.get(Store, video.store_id)
             menu = db.get(Menu, video.menu_id) if video.menu_id else None
-            script = await ai.video_script(llm, script_context(db, store, menu, transcript, langs), langs)
+            ctx = script_context(db, store, menu, transcript, langs)
+            try:
+                script = await asyncio.wait_for(ai.video_script(llm, ctx, langs), SCRIPT_BUDGET)
+            except TimeoutError:
+                logger.warning("자막 생성 시간 초과, 템플릿으로 대체 video_id=%s", video_id)
+                script = ai.fallback_script(ctx, langs)
             video.progress = 20
             db.commit()
 

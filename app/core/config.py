@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     openai_stt_model: str = "gpt-4o-mini-transcribe"
     openai_max_output_tokens: int = 2048
-    openai_timeout: float = 30.0  # 초. 재시도 1회 포함 최악 약 2배
+    # 데모용으로 짧게. 실패하면 단계마다 대체 동작이 있으므로 SDK 재시도는 기본 0회.
+    openai_timeout: float = 15.0  # 초
+    openai_max_retries: int = 0
 
     anthropic_api_key: SecretStr = SecretStr("")
     anthropic_model: str = "claude-opus-5-5"

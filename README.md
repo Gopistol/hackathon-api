@@ -59,7 +59,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | `OPENAI_API_KEY` | | STT·정리·번역·자막 전부 이 키 하나 |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | |
 | `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | |
-| `OPENAI_MAX_OUTPUT_TOKENS` / `OPENAI_TIMEOUT` | `2048` / `30` | |
+| `OPENAI_MAX_OUTPUT_TOKENS` / `OPENAI_TIMEOUT` / `OPENAI_MAX_RETRIES` | `2048` / `15` / `0` | 데모용으로 짧게. 실패 시 단계별 대체 동작 |
 | `CORS_ORIGINS` | localhost:3000,5173 | 프론트 주소 (콤마 구분) |
 | `CORS_ORIGIN_REGEX` | | 프론트 주소 정규식. 서버: `^https://[a-z0-9-]+\.(vercel\.app\|netlify\.app)$` |
 | `DATABASE_URL` | `sqlite:///./data/app.db` | 서버: `sqlite:////opt/hackathon/data/app.db` |

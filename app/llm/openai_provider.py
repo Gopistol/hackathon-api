@@ -36,9 +36,15 @@ class OpenAIProvider:
     name = "openai"
 
     def __init__(
-        self, api_key: str, model: str, max_output_tokens: int, timeout: float, stt_model: str = "gpt-4o-mini-transcribe"
+        self,
+        api_key: str,
+        model: str,
+        max_output_tokens: int,
+        timeout: float,
+        stt_model: str = "gpt-4o-mini-transcribe",
+        max_retries: int = 0,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=1)
+        self._client = AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=max_retries)
         self._model = model
         self._max_output_tokens = max_output_tokens
         self._stt_model = stt_model

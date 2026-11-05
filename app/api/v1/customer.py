@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.errors import ERROR_RESPONSES, not_found
+from app.core.errors import ERROR_RESPONSES, AppError, not_found
 from app.db.session import get_db
 from app.models import Content, Market, Menu, Store, Video
 from app.schemas.customer import (
@@ -135,16 +135,15 @@ def order_preview(body: OrderPreviewIn, db: Session = Depends(get_db)):
         m = menus.get(item.menu_id)
         if not m:
             raise not_found(f"메뉴(id={item.menu_id})")
-        name = tr[m.id].name if m.id in tr and tr[m.id].name else m.name_ko
-        ko_parts.append(f"{m.name_ko} {item.qty}개")
+        # 일부 금액만 합계처럼 보이지 않도록 가격 미정 메뉴는 주문 화면을 만들지 않는다.
         if m.price is None:
-            ko_lines.append(f"{m.name_ko} {item.qty}개")
-            translated.append(f"{name} x{item.qty}")
-        else:
-            subtotal = m.price * item.qty
-            total += subtotal
-            ko_lines.append(f"{m.name_ko} {item.qty}개 {subtotal:,}원")
-            translated.append(f"{name} x{item.qty} ₩{subtotal:,}")
+            raise AppError("PRICE_UNKNOWN", f"'{m.name_ko}'은(는) 가격이 정해지지 않아 주문 화면을 만들 수 없어요.", 409)
+        name = tr[m.id].name if m.id in tr and tr[m.id].name else m.name_ko
+        subtotal = m.price * item.qty
+        total += subtotal
+        ko_parts.append(f"{m.name_ko} {item.qty}개")
+        ko_lines.append(f"{m.name_ko} {item.qty}개 {subtotal:,}원")
+        translated.append(f"{name} x{item.qty} ₩{subtotal:,}")
     return {
         "ko_message": f"{', '.join(ko_parts)} 주세요.",
         "ko_lines": ko_lines,

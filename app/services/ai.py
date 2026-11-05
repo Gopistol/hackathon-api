@@ -168,20 +168,38 @@ def _rule_menus(text: str) -> tuple[dict, list[str]]:
     return {"menus": menus}, needs
 
 
+# 결제수단 말 → 코드. 해외카드를 먼저 지워야 "카드"가 두 번 잡히지 않는다.
+_PAY_PATTERNS = [
+    ("foreign_card", r"(해외|외국)\s*카드|비자|마스터"),
+    ("card", r"카드"),
+    ("cash", r"현금"),
+    ("onnuri", r"온누리|상품권"),
+]
+_NEG_RE = re.compile(r"안\s*(돼|됩|되|받|해)|안돼|못|불가|없")
+# "카드는 안 돼요. 현금만 받고 온누리상품권은 안 받아요" → 절마다 따로 본다
+_CLAUSE_RE = re.compile(r"[.,!?。\n]|(?<=요)\s|(?<=다)\s|는데|지만|고\s|(?:어|아|라)서\s|니까\s")
+
+
+def _payment_sets(text: str) -> tuple[set[str], set[str]]:
+    """(된다고 한 수단, 안 된다고 한 수단)"""
+    yes: set[str] = set()
+    no: set[str] = set()
+    for clause in _CLAUSE_RE.split(text):
+        negated = bool(_NEG_RE.search(clause))
+        for code, pattern in _PAY_PATTERNS:
+            if re.search(pattern, clause):
+                (no if negated else yes).add(code)
+                clause = re.sub(pattern, " ", clause)
+    return yes, no
+
+
 def _rule_payment(text: str) -> tuple[dict, list[str]]:
-    payment, needs = [], []
-    foreign = re.search(r"(해외|외국)\s*카드|비자|마스터", text)
-    foreign_no = re.search(r"(해외|외국)\s*카드[^.,]*?(안\s*돼|안\s*됩|못|안\s*받)", text)
-    rest = re.sub(r"(해외|외국)\s*카드", "", text)
-    if "현금" in text:
-        payment.append("cash")
-    if "카드" in rest:
-        payment.append("card")
-    if foreign and not foreign_no:
-        payment.append("foreign_card")
-    if re.search(r"온누리|상품권", text):
-        payment.append("onnuri")
-    if not foreign:
+    yes, no = _payment_sets(text)
+    needs = []
+    for code in yes & no:  # 같은 수단을 된다고도, 안 된다고도 함
+        needs.append(f"{PAYMENT_KO[code]} 가능 여부")
+    payment = [p for p in PAYMENTS if p in yes and p not in no]
+    if "foreign_card" not in yes | no:
         needs.append("해외카드 가능 여부")
     if not payment:
         needs.append("결제 방법")
@@ -287,6 +305,12 @@ async def structure_step(llm: LLMProvider, step: str, transcript: str) -> tuple[
         logger.warning("단계 정리 실패, 규칙 기반으로 대체: %s", type(e).__name__)
         parsed, needs = _RULES[step](transcript)
         needs = ["AI 정리에 실패해서 말씀하신 그대로 정리했어요. 확인해 주세요.", *needs]
+    if step == "payment":
+        # LLM 이 "카드는 안 돼요"를 카드 가능으로 읽는 경우를 막는다
+        _, no = _payment_sets(transcript)
+        for code in [p for p in parsed["payment"] if p in no]:
+            parsed["payment"].remove(code)
+            needs.append(f"{PAYMENT_KO[code]} 가능 여부")
     if step == "menus":
         _cross_check_menus(parsed["menus"], transcript, needs)
         for m in parsed["menus"]:
@@ -343,8 +367,11 @@ async def translate_store(
             for field in ("name", "description"):
                 if isinstance(store.get(field), str) and store[field].strip():
                     result[lang]["store"][field] = store[field].strip()
-        for m in d.get("menus") or []:
-            if isinstance(m, dict) and m.get("id") in result[lang]["menus"]:
+        menus_out = d.get("menus")
+        if not isinstance(menus_out, list):
+            continue  # 형식이 틀리면 용어집·원문 결과를 그대로 쓴다
+        for m in menus_out:
+            if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"] in result[lang]["menus"]:
                 target = result[lang]["menus"][m["id"]]
                 for field in ("name", "description", "how_to_eat"):
                     if isinstance(m.get(field), str) and m[field].strip():
