@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     elevenlabs_api_key: SecretStr = SecretStr("")
     elevenlabs_tts_voice_id: str = "JpGoUJuLFthrFkcdBy4k"
     elevenlabs_tts_model: str = "eleven_multilingual_v2"
+    # 숏폼 더빙: 사장님 녹음으로 목소리를 복제해 외국어로 읽힌다. 키가 없으면 OpenAI 목소리.
+    elevenlabs_dub_model: str = "eleven_multilingual_v2"
+    # 영상에 넣는 자막 글꼴. 서버(Ubuntu)는 `sudo apt install fonts-noto-cjk` 후 기본값 그대로.
+    # Windows 로컬: SUBTITLE_FONT=Malgun Gothic, SUBTITLE_FONT_ZH=Microsoft YaHei, SUBTITLE_FONTS_DIR=C:/Windows/Fonts
+    subtitle_font: str = "Noto Sans CJK KR"
+    subtitle_font_zh: str = "Noto Sans CJK SC"
+    subtitle_fonts_dir: str = ""
     openai_max_output_tokens: int = 2048
     # 데모용으로 짧게. 실패하면 단계마다 대체 동작이 있으므로 SDK 재시도는 기본 0회.
     openai_timeout: float = 15.0  # 초

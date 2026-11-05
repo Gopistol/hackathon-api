@@ -96,14 +96,14 @@ class OpenAIProvider:
             raise _to_llm_error(e) from e
         return result.text
 
-    async def speak(self, text: str) -> bytes:
-        """한국어 문장 → mp3. 사장님 등록 화면에서 질문을 소리로 읽어 줄 때 쓴다."""
+    async def speak(self, text: str, instructions: str | None = None) -> bytes:
+        """문장 → mp3. 기본은 등록 화면 질문용(어르신께 한국어로), 숏폼 더빙은 언어별 instructions 를 넘긴다."""
         try:
             result = await self._client.audio.speech.create(
                 model=self._tts_model,
                 voice=self._tts_voice,
                 input=text,
-                instructions="어르신께 말하듯 또박또박, 조금 천천히, 친절하고 따뜻하게 한국어로 말하세요.",
+                instructions=instructions or "어르신께 말하듯 또박또박, 조금 천천히, 친절하고 따뜻하게 한국어로 말하세요.",
                 response_format="mp3",
             )
         except openai.OpenAIError as e:

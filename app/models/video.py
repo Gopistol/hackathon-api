@@ -20,8 +20,12 @@ class Video(Base):
     error: Mapped[str | None] = mapped_column(String(300), default=None)
     # RECORDING_TOO_LONG | VIDEO_FAILED (프론트가 다시 녹음 / 다시 시도를 구분하는 용도)
     error_code: Mapped[str | None] = mapped_column(String(30), default=None)
-    # media_dir 기준 상대경로
+    # media_dir 기준 상대경로. 실시간 생성 영상은 한국어 영상
     video_path: Mapped[str | None] = mapped_column(String(300), default=None)
+    # 자막을 영상에 넣어서 언어마다 영상이 따로 있다 {"ko": "videos/1.ko.mp4", "en": ...}. 시연 영상은 비어 있다
+    videos: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    # 언어별 소리: original(사장님 목소리) | clone(사장님 목소리 복제 더빙) | ai(AI 기본 목소리) | none(무음)
+    voices: Mapped[dict | None] = mapped_column(JSON, default=dict)
     thumbnail_path: Mapped[str | None] = mapped_column(String(300), default=None)
     # {"en": "subs/1.en.vtt", ...}
     subtitles: Mapped[dict] = mapped_column(JSON, default=dict)

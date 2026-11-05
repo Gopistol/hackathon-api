@@ -1,24 +1,31 @@
-"""숏폼 생성: 사진 3~5장 + 음성 → 720x1280 MP4 + 썸네일 + 언어별 VTT.
+"""숏폼 생성: 사진 1~5장 + (선택) 사장님 녹음·스크립트 → 언어별 720x1280 MP4 + 썸네일 + 언어별 VTT.
 
-생성형 영상 모델 없이 ffmpeg 템플릿 합성만 쓴다. 자막은 영상에 굽지 않는다.
+생성형 영상 모델 없이 ffmpeg 템플릿 합성만 쓴다.
+- 장면: 사진마다 카메라 움직임을 바꾸고 장면 사이를 부드럽게 전환한다.
+- 자막: 영상에 직접 넣는다. 그래서 언어마다 영상을 따로 만든다. 플레이어용 VTT 도 같이 남긴다.
+  시작에 가게 이름, 끝에 메뉴·가격·결제 카드를 넣는다 (DB 값만 쓴다).
+- 소리: 녹음이 있으면 한국어 영상은 사장님 원래 목소리, 외국어 영상은 사장님 목소리를 복제해 더빙한다.
+  복제 더빙(ElevenLabs) → AI 기본 목소리(OpenAI) → 원래 목소리 순서로 대체한다.
+  녹음이 없거나 읽을 수 없으면 소리 없는 영상이다.
 """
 
 import asyncio
 import io
 import logging
 import math
+import re
 import shutil
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
 
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.db.session import SessionLocal
-from app.llm import LLMProvider
+from app.llm import LLMError, LLMProvider
 from app.models import Menu, Store, Video
-from app.services import ai
-from app.services.i18n import load_translations
+from app.services import ai, elevenlabs, subtitles
+from app.services.i18n import PAYMENT_KO, load_translations
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +34,14 @@ MIN_SECONDS, MAX_SECONDS = 20.0, 30.0
 SECONDS_PER_LINE = 5.0  # 자막 한 줄이 화면에 머무는 시간
 MIN_SECONDS_PER_LINE = 4.0
 MAX_SEGMENT = 7.0  # 사진 한 장이 한 가지 움직임으로 보이는 최대 시간. 넘으면 다른 움직임으로 나눈다
-RENDER_TIMEOUT = 60
+RENDER_TIMEOUT = 90  # 언어 하나당
 MAX_PIXELS = 48_000_000  # 8000x6000. 디코딩 메모리(RGB 약 144MB)를 서버 600MB 안에 둔다
 STT_BUDGET = 10  # 초. 영상 자막용 음성 인식이 늦으면 건너뛴다
 SCRIPT_BUDGET = 12  # 초. 자막 생성이 늦으면 템플릿 문장을 쓴다
+DUB_BUDGET = 25  # 초. 목소리 복제·더빙이 늦으면 다음 대체 수단으로
+ALIGN_BUDGET = 15  # 초. 자막 시간 맞추기가 늦으면 글자 수 비율로 나눈다
+TAIL_SECONDS = 1.5  # 말이 끝난 뒤 정보 카드를 읽을 여유
+XFADE = 0.45  # 장면 전환 길이(초)
 
 # 메모리 600M·CPU 2개 서버라 렌더링은 한 번에 하나만
 _render_lock = asyncio.Semaphore(1)
@@ -56,7 +67,10 @@ def work_dir(video_id: int) -> Path:
 
 
 def prepare_photo(data: bytes, dst: Path) -> None:
-    """회전 보정 후 1080x1920 으로 가운데 잘라 JPEG 저장. 이미지가 아니면 AppError."""
+    """회전 보정 후 1080x1920 JPEG 로 저장. 이미지가 아니면 AppError.
+
+    세로 사진은 가운데를 잘라 화면을 채우고, 가로·정사각 사진은 음식이 잘리지 않게
+    같은 사진을 흐리게 깐 배경 위에 통째로 올린다."""
     try:
         img = Image.open(io.BytesIO(data))  # 여기까지는 헤더만 읽는다
         if img.width * img.height > MAX_PIXELS:
@@ -65,9 +79,15 @@ def prepare_photo(data: bytes, dst: Path) -> None:
         img = ImageOps.exif_transpose(img).convert("RGB")
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise AppError("INVALID_IMAGE", "사진 파일을 읽을 수 없어요. JPG나 PNG로 올려 주세요.", 422) from e
-    img = ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS)
+    if img.width / img.height <= 0.8:
+        out = ImageOps.fit(img, (1080, 1920), Image.Resampling.LANCZOS)
+    else:
+        out = ImageOps.fit(img, (270, 480)).filter(ImageFilter.GaussianBlur(12)).resize((1080, 1920))
+        out = ImageEnhance.Brightness(out).enhance(0.55)
+        photo = ImageOps.contain(img, (1080, 1920), Image.Resampling.LANCZOS)
+        out.paste(photo, ((1080 - photo.width) // 2, (1920 - photo.height) // 2))
     dst.parent.mkdir(parents=True, exist_ok=True)
-    img.save(dst, "JPEG", quality=90)
+    out.save(dst, "JPEG", quality=90)
 
 
 def make_thumbnail(photo: Path, dst: Path) -> None:
@@ -82,7 +102,7 @@ def _ts(sec: float) -> str:
 
 
 def write_vtt(lines: list[str], duration: float, dst: Path) -> None:
-    """줄마다 같은 시간씩 나눠 보여준다."""
+    """줄마다 같은 시간씩 나눠 보여준다. (시드한 시연 영상용)"""
     dst.parent.mkdir(parents=True, exist_ok=True)
     step = duration / max(len(lines), 1)
     cues = [f"{i + 1}\n{_ts(i * step)} --> {_ts((i + 1) * step - 0.05)}\n{line}" for i, line in enumerate(lines)]
@@ -90,7 +110,7 @@ def write_vtt(lines: list[str], duration: float, dst: Path) -> None:
 
 
 def video_duration(n_lines: int) -> float:
-    """자막 줄 수에 맞춘 길이 (노션 04 계약). 줄당 5초, 30초를 넘으면 줄당 4초까지 줄인다. 20초보다 짧으면 20초."""
+    """소리 없는 영상 길이 (노션 04 계약). 줄당 5초, 30초를 넘으면 줄당 4초까지 줄인다. 20초보다 짧으면 20초."""
     seconds = n_lines * SECONDS_PER_LINE
     if seconds > MAX_SECONDS:
         seconds = n_lines * MIN_SECONDS_PER_LINE
@@ -104,67 +124,225 @@ def plan_segments(n_photos: int, duration: float) -> list[tuple[int, float]]:
     return [(i, per / k) for i in range(n_photos) for _ in range(k)]
 
 
-# 구간마다 돌아가며 쓰는 움직임: 확대 → 좌→우 이동 → 축소 → 우→좌 이동
+# 구간마다 돌아가며 쓰는 카메라 움직임. P 는 0→1 진행률, E 는 천천히 시작·끝나는 곡선.
+_E = "(P*P*(3-2*P))"
 _MOTIONS = [
-    ("1+0.15*on/{f}", "iw/2-(iw/zoom/2)"),
-    ("1.15", "(iw-iw/zoom)*on/{f}"),
-    ("1.15-0.15*on/{f}", "iw/2-(iw/zoom/2)"),
-    ("1.15", "(iw-iw/zoom)*(1-on/{f})"),
+    ("1+0.12*{E}", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),  # 다가가기
+    ("1.12", "(iw-iw/zoom)*{E}", "ih/2-(ih/zoom/2)"),  # 왼쪽 → 오른쪽
+    ("1.12-0.12*{E}", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),  # 멀어지기
+    ("1.12", "(iw-iw/zoom)*(1-{E})", "ih/2-(ih/zoom/2)"),  # 오른쪽 → 왼쪽
+    ("1.12", "iw/2-(iw/zoom/2)", "(ih-ih/zoom)*{E}"),  # 위 → 아래
 ]
+# 장면 전환. 너무 화려하지 않은 것만 돌려 쓴다.
+_TRANSITIONS = ["smoothleft", "fade", "smoothup", "slideleft", "fadeblack"]
 
 
 def _clip_filter(i: int, frames: int) -> str:
-    z, x = (m.format(f=frames) for m in _MOTIONS[i % len(_MOTIONS)])
+    e = _E.replace("P", f"(on/{max(frames - 1, 1)})")
+    z, x, y = (m.format(E=e) for m in _MOTIONS[i % len(_MOTIONS)])
     return (
-        f"[{i}:v]zoompan=z='{z}':x='{x}':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS},"
+        f"[{i}:v]zoompan=z='{z}':x='{x}':y='{y}':d={frames}:s={W}x{H}:fps={FPS},"
         f"setsar=1,format=yuv420p[v{i}]"
     )
 
 
-async def render(photos: list[Path], out: Path, duration: float, on_progress=None) -> float:
-    """사진으로 무음 MP4 를 만들고 길이(초)를 돌려준다. on_progress(0.0~1.0)."""
-    segments = plan_segments(len(photos), duration)
-    n = len(segments)
+def _filter_path(path: str) -> str:
+    """ffmpeg 필터 옵션 안에 넣을 경로. Windows 역슬래시는 / 로 바꾸고 드라이브 콜론은 이스케이프한다."""
+    return "'" + path.replace("\\", "/").replace(":", "\\:") + "'"
 
-    args = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1"]
-    for photo_idx, _ in segments:
-        args += ["-i", str(photos[photo_idx])]
-    # 소리는 넣지 않는다. 일부 플레이어 호환을 위해 무음 트랙만 둔다.
-    args += ["-f", "lavfi", "-t", str(duration), "-i", "anullsrc=r=44100:cl=stereo"]
 
-    clips = ";".join(_clip_filter(i, int(sec * FPS)) for i, (_, sec) in enumerate(segments))
-    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0,fade=t=out:st={duration - 0.5}:d=0.5[v]"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    args += [
-        "-filter_complex", f"{clips};{concat}",
-        "-map", "[v]", "-map", f"{n}:a", "-t", str(duration),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart", "-threads", "2",
-        str(out),
-    ]  # fmt: skip
-
-    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-
-    async def read_progress() -> None:
-        assert proc.stdout
-        async for raw in proc.stdout:
-            line = raw.decode(errors="ignore").strip()
-            if line.startswith("out_time_us=") and on_progress:
-                try:
-                    on_progress(min(int(line.split("=", 1)[1]) / 1e6 / duration, 1.0))
-                except ValueError:
-                    pass
-
+async def _ffmpeg(args: list[str], timeout: float, cwd: Path | None = None) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg_exe(), "-y", "-hide_banner", *args,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, cwd=cwd,
+    )  # fmt: skip
     try:
-        _, stderr = await asyncio.wait_for(asyncio.gather(read_progress(), proc.stderr.read()), RENDER_TIMEOUT)
-        await proc.wait()
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
         proc.kill()
         raise RuntimeError("ffmpeg 시간 초과")
     if proc.returncode != 0:
         logger.warning("ffmpeg 실패: %s", stderr.decode(errors="ignore")[-500:])
         raise RuntimeError("ffmpeg 실패")
+
+
+async def media_seconds(path: Path) -> float | None:
+    """ffmpeg 가 읽은 길이(초). 못 읽으면 None. (imageio-ffmpeg 에는 ffprobe 가 없다)"""
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg_exe(), "-hide_banner", "-i", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+    )
+    _, err = await asyncio.wait_for(proc.communicate(), 20)
+    m = re.search(rb"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", err)
+    return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else None
+
+
+async def to_mp3(src: Path, dst: Path) -> Path | None:
+    """녹음을 mp3 로 바꾼다. 브라우저 webm 은 길이 정보가 없어서 한 번 풀어서 다시 쓴다. 못 읽으면 None."""
+    try:
+        await _ffmpeg(["-loglevel", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k", str(dst)], 30)
+    except RuntimeError:
+        return None
+    seconds = await media_seconds(dst)
+    return dst if seconds and seconds >= 1 else None
+
+
+async def render(
+    photos: list[Path],
+    out: Path,
+    duration: float,
+    voice: Path | None = None,
+    background: Path | None = None,
+    subtitles_ass: Path | None = None,
+) -> float:
+    """사진을 이어 붙여 MP4 를 만들고 길이(초)를 돌려준다.
+
+    voice 가 없으면 무음 트랙만 둔다. background 는 AI 기본 목소리로 더빙했을 때 뒤에 작게 까는
+    사장님 원래 목소리. subtitles_ass 는 영상에 넣을 자막."""
+    s = get_settings()
+    segments = plan_segments(len(photos), duration)
+    n = len(segments)
+    # 전환 구간만큼 장면이 겹치므로 그만큼 각 장면을 늘린다.
+    frames = math.ceil((duration + (n - 1) * XFADE) / n * FPS)
+    clip = frames / FPS
+
+    args = ["-loglevel", "error", "-nostats"]
+    for photo_idx, _ in segments:
+        args += ["-i", str(photos[photo_idx].resolve())]
+    if voice:
+        args += ["-i", str(voice.resolve())]
+    else:  # 일부 플레이어 호환을 위해 무음 트랙을 둔다
+        args += ["-f", "lavfi", "-t", str(duration), "-i", "anullsrc=r=44100:cl=stereo"]
+    if background:
+        args += ["-i", str(background.resolve())]
+
+    filters = [_clip_filter(i, frames) for i in range(n)]
+    last = "v0"
+    for i in range(1, n):
+        filters.append(
+            f"[{last}][v{i}]xfade=transition={_TRANSITIONS[(i - 1) % len(_TRANSITIONS)]}"
+            f":duration={XFADE}:offset={i * (clip - XFADE):.3f}[x{i}]"
+        )
+        last = f"x{i}"
+    chain = f"[{last}]fade=t=out:st={duration - 0.5}:d=0.5"
+    if subtitles_ass:
+        fonts = f":fontsdir={_filter_path(s.subtitle_fonts_dir)}" if s.subtitle_fonts_dir else ""
+        chain += f",subtitles={_filter_path(subtitles_ass.name)}{fonts}"
+    filters.append(chain + "[v]")
+    if voice:
+        # 녹음마다 크기가 달라도 같은 크기로 들리게 맞춘다 (모바일 SNS 기준 -16 LUFS)
+        if background:
+            mix = f"[{n}:a]apad[a0];[{n + 1}:a]volume=0.15[a1];[a0][a1]amix=inputs=2:duration=first:normalize=0"
+        else:
+            mix = f"[{n}:a]apad"
+        filters.append(mix + ",loudnorm=I=-16:TP=-1.5:LRA=11[a]")
+    else:
+        filters.append(f"[{n}:a]anull[a]")
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    args += [
+        "-filter_complex", ";".join(filters),
+        "-map", "[v]", "-map", "[a]", "-t", f"{duration:.2f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k" if voice else "32k", "-ar", "44100",
+        "-movflags", "+faststart", "-threads", "2",
+        str(out.resolve()),
+    ]  # fmt: skip
+    # 자막 필터 경로를 짧게 쓰려고 자막 파일 폴더에서 실행한다. 다른 경로는 절대경로로 넘겼다.
+    await _ffmpeg(args, RENDER_TIMEOUT, cwd=subtitles_ass.parent if subtitles_ass else None)
     return duration
+
+
+# ---------- 더빙 ----------
+
+DUB_INSTRUCTIONS = {
+    "en": "Speak English as a warm, friendly vendor at a Korean traditional market. Natural and upbeat, medium pace.",
+    "zh": "用自然亲切的普通话说话，像韩国传统市场里热情的摊主。语速适中。",
+}
+
+
+def _spoken(lines: list[str], lang: str) -> str:
+    return ("" if lang == "zh" else " ").join(lines)
+
+
+async def _speak(llm: LLMProvider, text: str, lang: str, clone_id: str | None) -> tuple[bytes | None, str]:
+    """(mp3, 목소리). 복제한 사장님 목소리 → AI 기본 목소리 순서로 시도한다."""
+    if clone_id:
+        try:
+            return await asyncio.wait_for(elevenlabs.speak(text, clone_id), DUB_BUDGET), "clone"
+        except (elevenlabs.ElevenLabsError, TimeoutError):
+            logger.warning("복제 목소리 더빙 실패 lang=%s, AI 목소리로 대신합니다.", lang)
+    speak = getattr(llm, "speak", None)
+    if speak and not ai.is_mock(llm):
+        try:
+            return await asyncio.wait_for(speak(text, DUB_INSTRUCTIONS.get(lang)), DUB_BUDGET), "ai"
+        except (LLMError, TimeoutError):
+            logger.warning("AI 목소리 더빙 실패 lang=%s, 원래 목소리로 대신합니다.", lang)
+    return None, "original"
+
+
+async def dub(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], voice_ko: Path, wd: Path) -> dict:
+    """{lang: (음성 파일, 목소리)}. 더빙이 안 된 언어는 사장님 원래 목소리 + 그 언어 자막으로 만든다."""
+    clone_id = None
+    if elevenlabs.enabled():
+        try:
+            clone_id = await asyncio.wait_for(elevenlabs.clone_voice(voice_ko.read_bytes(), voice_ko.name), DUB_BUDGET)
+        except (elevenlabs.ElevenLabsError, TimeoutError):
+            logger.warning("목소리 복제 실패, AI 목소리로 더빙합니다.")
+    try:
+        # 네트워크 대기라 언어별로 동시에 한다
+        results = await asyncio.gather(*(_speak(llm, _spoken(script[lang], lang), lang, clone_id) for lang in langs))
+    finally:
+        if clone_id:
+            await elevenlabs.delete_voice(clone_id)
+    voices = {"ko": (voice_ko, "original")}
+    for lang, (mp3, engine) in zip(langs, results):
+        if mp3:
+            path = wd / f"voice_{lang}.mp3"
+            path.write_bytes(mp3)
+            voices[lang] = (path, engine)
+        else:
+            voices[lang] = (voice_ko, "original")
+    return voices
+
+
+async def align(voice: Path, text: str) -> subtitles.Alignment | None:
+    """자막 시간을 음성에 맞춘다. 안 되면 None 을 돌려 글자 수 비율로 나누게 한다."""
+    if not elevenlabs.enabled():
+        return None
+    try:
+        return await asyncio.wait_for(elevenlabs.align(voice.read_bytes(), voice.name, text), ALIGN_BUDGET)
+    except (elevenlabs.ElevenLabsError, TimeoutError):
+        logger.warning("자막 시간 맞추기 실패, 글자 수 비율로 나눕니다.")
+        return None
+
+
+# ---------- 시작 제목·끝 정보 카드 ----------
+
+_PAYMENT = {
+    "ko": PAYMENT_KO,
+    "en": {"cash": "Cash", "card": "Card", "foreign_card": "Foreign cards", "onnuri": "Onnuri voucher"},
+    "zh": {"cash": "现金", "card": "刷卡", "foreign_card": "境外卡", "onnuri": "温努里商品券"},
+}
+_PAYMENT_TAIL = {"ko": " 가능", "en": " OK", "zh": " 可用"}
+
+
+def cards(db, store: Store, menu: Menu | None, lang: str) -> tuple[str, list[str]]:
+    """(시작 제목, 끝 카드 줄들). 번역이 없으면 한국어 원문."""
+    t = load_translations(db, "store", [store.id], lang).get(store.id) if lang != "ko" else None
+    title = t.name if t and t.name else store.name
+    lines = []
+    if menu:
+        mt = load_translations(db, "menu", [menu.id], lang).get(menu.id) if lang != "ko" else None
+        name = mt.name if mt and mt.name else menu.name_ko
+        if menu.price is None:
+            lines.append(name)
+        else:
+            price = {"ko": f"{menu.price:,}원", "zh": f"{menu.price}韩元"}.get(lang, f"₩{menu.price:,}")
+            lines.append(f"{name} {price}")
+    labels = [_PAYMENT.get(lang, _PAYMENT["en"])[p] for p in store.payment or [] if p in PAYMENT_KO]
+    if labels:
+        lines.append(" · ".join(labels) + _PAYMENT_TAIL.get(lang, " OK"))
+    return title, lines
 
 
 def script_context(db, store: Store, menu: Menu | None, transcript: str, langs: list[str]) -> dict:
@@ -203,9 +381,11 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             photos = sorted(wd.glob("photo_*.jpg"))
             audio = next(iter(sorted(wd.glob("audio.*"))), None)
             script_file = wd / "script.txt"
-            # 자막 원문: 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보. 녹음은 영상에 넣지 않는다.
+            # 자막 원문: 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보.
             merchant_text = script_file.read_text(encoding="utf-8").strip() if script_file.exists() else ""
             source = "script" if merchant_text else "auto"
+            # 녹음은 소리로도 쓴다. 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다.
+            voice_ko = await to_mp3(audio, wd / "voice_ko.mp3") if audio and not merchant_text else None
             if not merchant_text and audio:
                 try:
                     merchant_text = await asyncio.wait_for(
@@ -214,38 +394,87 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                     source = "stt" if merchant_text else "auto"
                 except (AppError, TimeoutError):
                     pass  # 가게 정보로 만든다
-                if source == "stt" and len(ai.split_script(merchant_text, limit=None)) > ai.MAX_SCRIPT_LINES:
+                # 소리로 쓰면 실제 녹음 길이로, 자막에만 쓰면 자막 줄 수로 30초를 넘는지 본다
+                if voice_ko:
+                    if (await media_seconds(voice_ko) or 0) > MAX_SECONDS + 1:
+                        raise RecordingTooLong
+                elif source == "stt" and len(ai.split_script(merchant_text, limit=None)) > ai.MAX_SCRIPT_LINES:
                     raise RecordingTooLong
+            if source != "stt":
+                voice_ko = None
             store = db.get(Store, video.store_id)
             menu = db.get(Menu, video.menu_id) if video.menu_id else None
             ctx = script_context(db, store, menu, merchant_text, langs)
             try:
                 if merchant_text:
-                    script = await asyncio.wait_for(ai.merchant_script(llm, merchant_text, langs), SCRIPT_BUDGET)
+                    # 목소리로 쓰는 녹음은 말한 내용을 끝까지 자막·더빙에 담는다 (줄 수로 자르지 않는다)
+                    limit = None if voice_ko else ai.MAX_SCRIPT_LINES
+                    script = await asyncio.wait_for(ai.merchant_script(llm, merchant_text, langs, limit), SCRIPT_BUDGET)
                 else:
                     script = await asyncio.wait_for(ai.video_script(llm, ctx, langs), SCRIPT_BUDGET)
             except TimeoutError:
                 logger.warning("자막 생성 시간 초과, 대체 문장 사용 video_id=%s", video_id)
-                script = ai.merchant_script_fallback(merchant_text, langs) if merchant_text else ai.fallback_script(ctx, langs)
+                script = (
+                    ai.merchant_script_fallback(merchant_text, langs, None if voice_ko else ai.MAX_SCRIPT_LINES)
+                    if merchant_text
+                    else ai.fallback_script(ctx, langs)
+                )
             video.progress = 20
             db.commit()
 
-            def on_progress(ratio: float) -> None:
-                video.progress = 20 + int(ratio * 70)
+            all_langs = ["ko", *[lang for lang in langs if lang != "ko"]]
+            if voice_ko:
+                voices = await dub(llm, script, all_langs[1:], voice_ko, wd)
+            else:
+                voices = {lang: (None, "none") for lang in all_langs}
+            video.progress = 35
+            db.commit()
+
+            async def timing(lang: str):
+                voice, engine = voices[lang]
+                # 원래 목소리에 번역 자막을 붙인 언어는 말과 글이 달라 시간을 맞출 수 없다
+                if voice and (lang == "ko" or engine != "original"):
+                    return await align(voice, _spoken(script[lang], lang))
+                return None
+
+            alignments = await asyncio.gather(*(timing(lang) for lang in all_langs))
+
+            settings = get_settings()
+            videos, sounds, subs = {}, {}, {}
+            duration = 0.0
+            for i, (lang, alignment) in enumerate(zip(all_langs, alignments)):
+                voice, engine = voices[lang]
+                lines = script.get(lang) or script["ko"]
+                if voice:
+                    spoken = await media_seconds(voice) or video_duration(len(lines))
+                    length = max(spoken + TAIL_SECONDS, MIN_SECONDS)
+                    cues = subtitles.build_cues(_spoken(lines, lang), lang, spoken, alignment)
+                else:
+                    length = video_duration(len(script["ko"]))
+                    step = length / max(len(lines), 1)
+                    cues = [subtitles.Cue(k * step, (k + 1) * step - 0.05, line) for k, line in enumerate(lines)]
+                title, card = cards(db, store, menu, lang)
+                font = settings.subtitle_font_zh if lang == "zh" else settings.subtitle_font
+                ass = wd / f"sub_{lang}.ass"
+                ass.write_text(subtitles.to_ass(cues, font, length, title, card), encoding="utf-8")
+
+                rel = f"videos/{video_id}.{lang}.mp4"
+                background = voices["ko"][0] if engine == "ai" else None
+                await render(photos, media / rel, length, voice=voice, background=background, subtitles_ass=ass)
+                vtt = f"subs/{video_id}.{lang}.vtt"
+                (media / vtt).parent.mkdir(parents=True, exist_ok=True)
+                (media / vtt).write_text(subtitles.to_vtt(cues), encoding="utf-8")
+                videos[lang], sounds[lang], subs[lang] = rel, engine, vtt
+                if lang == "ko":
+                    duration = length
+                video.progress = 35 + int((i + 1) / len(all_langs) * 60)
                 db.commit()
 
-            duration = video_duration(len(script["ko"]))
-            await render(photos, media / "videos" / f"{video_id}.mp4", duration, on_progress)
             make_thumbnail(photos[0], media / "thumbs" / f"{video_id}.jpg")
-            subtitles = {}
-            for lang, lines in script.items():
-                rel = f"subs/{video_id}.{lang}.vtt"
-                write_vtt(lines, duration, media / rel)
-                subtitles[lang] = rel
-
-            video.video_path = f"videos/{video_id}.mp4"
+            video.video_path = videos["ko"]
+            video.videos, video.voices = videos, sounds
             video.thumbnail_path = f"thumbs/{video_id}.jpg"
-            video.subtitles, video.script, video.duration = subtitles, script, duration
+            video.subtitles, video.script, video.duration = subs, script, duration
             video.script_source = source
             video.job_status, video.progress = "done", 100
             db.commit()

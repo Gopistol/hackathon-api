@@ -92,10 +92,12 @@ def _silent(client, video_url: str) -> bool:
 
     from app.services.video import ffmpeg_exe
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
-        f.write(client.get(video_url).content)
-        f.flush()
-        out = subprocess.run([ffmpeg_exe(), "-i", f.name, "-af", "volumedetect", "-f", "null", "-"],
+    # Windows 는 열려 있는 임시 파일을 다른 프로세스가 못 열어서 폴더째 만든다
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/v.mp4"
+        with open(path, "wb") as f:
+            f.write(client.get(video_url).content)
+        out = subprocess.run([ffmpeg_exe(), "-i", path, "-af", "volumedetect", "-f", "null", "-"],
                              capture_output=True, text=True).stderr
     return "max_volume: -91" in out or "max_volume: -inf" in out
 
@@ -112,7 +114,8 @@ def test_one_photo_with_script_uses_script_as_subtitles(client) -> None:
     assert video["script_source"] == "script" and video["script_ko"][0] == "40년 동안 영천시장에서"
 
 
-def test_recording_becomes_script_but_not_sound(client) -> None:
+def test_unreadable_recording_becomes_script_but_not_sound(client) -> None:
+    # 소리로 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다
     files = [("photos", ("0.jpg", _jpeg("blue"), "image/jpeg")), ("audio", ("blob", b"\x1aE\xdf\xa3" + b"0" * 64, "audio/webm"))]
     video = _make(client, files)
     # mock STT 는 고정 문장("40년 동안 영천시장에서...")을 돌려준다
@@ -120,6 +123,36 @@ def test_recording_becomes_script_but_not_sound(client) -> None:
     assert video["script_source"] == "stt"
     assert 20.0 <= video["duration"] <= 30.0
     assert _silent(client, video["video_url"])
+
+
+def _tone(seconds: float) -> bytes:
+    import subprocess
+    import tempfile
+
+    from app.services.video import ffmpeg_exe
+
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/voice.mp3"
+        subprocess.run([ffmpeg_exe(), "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", path],
+                       capture_output=True, check=True)
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def test_recording_gives_voice_and_a_video_per_language(client) -> None:
+    files = [("photos", (f"{i}.jpg", _jpeg(c), "image/jpeg")) for i, c in enumerate(["red", "green"])]
+    files.append(("audio", ("voice.mp3", _tone(6), "audio/mpeg")))
+    video = _make(client, files)
+    assert video["script_source"] == "stt"
+    assert video["duration"] == 20.0  # 녹음 6초 + 여유 → 최소 20초
+    # 자막이 영상에 들어가서 언어마다 영상이 따로 있다. 모두 사장님 목소리(mock 은 더빙 대신 원래 목소리)
+    assert set(video["video_urls"]) == {"ko", "en", "zh"}
+    assert len(set(video["video_urls"].values())) == 3
+    assert video["voice"] == "original"
+    assert not _silent(client, video["video_urls"]["zh"])
+    zh = client.get(f"/api/v1/videos/{video['video_id']}", params={"lang": "zh"}).json()
+    assert zh["video_url"] == video["video_urls"]["zh"]
+    assert "WEBVTT" in client.get(video["subtitles"]["zh"]).text
 
 
 def test_script_length_rules(client) -> None:

@@ -49,10 +49,14 @@ def store_card(db: Session, store: Store, lang: str) -> dict:
     }
 
 
-def video_brief(v: Video) -> dict:
+def video_brief(v: Video, lang: str | None = None) -> dict:
+    """lang 이 있으면 그 언어 자막이 들어간 영상을 준다. 없으면(시연 영상 등) 기본 영상."""
+    videos = v.videos or {}
     return {
         "video_id": v.id,
-        "video_url": media_url(v.video_path),
+        "video_url": media_url(videos.get(lang) or v.video_path),
+        "video_urls": {code: media_url(p) for code, p in videos.items()},
+        "voice": (v.voices or {}).get(lang) if lang else None,
         "thumbnail_url": media_url(v.thumbnail_path),
         "subtitles": {lang: media_url(p) for lang, p in (v.subtitles or {}).items()},
         "duration": v.duration,

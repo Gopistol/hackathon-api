@@ -99,7 +99,7 @@ def feed(lang: Lang = LangQ, cursor: int | None = Query(None, description="ì´ì 
     videos = list(db.scalars(q))
     has_more = len(videos) > FEED_PAGE
     videos = videos[:FEED_PAGE]
-    items = [{**video_brief(v), "store": store_card(db, db.get(Store, v.store_id), lang)} for v in videos]
+    items = [{**video_brief(v, lang), "store": store_card(db, db.get(Store, v.store_id), lang)} for v in videos]
     return {"items": items, "next_cursor": videos[-1].id if has_more else None}
 
 
@@ -122,7 +122,7 @@ def store_detail(store_id: int, lang: Lang = LangQ, db: Session = Depends(get_db
         "story": st.description if st and st.description else store.story_ko,
         "story_ko": store.story_ko,
         "menus": [menu_view(m, mt.get(m.id)) for m in store.menus],
-        "videos": [video_brief(v) for v in done_videos(db, store.id)],
+        "videos": [video_brief(v, lang) for v in done_videos(db, store.id)],
         "directions_url": directions_url(store.lat, store.lng),
         "status": store.status,
     }
@@ -166,7 +166,7 @@ def video_detail(video_id: int, lang: Lang = LangQ, db: Session = Depends(get_db
         t = load_translations(db, "menu", [m.id], lang).get(m.id)
         menu = {"menu_id": m.id, "name": t.name if t and t.name else m.name_ko, "price": m.price, "spicy_level": m.spicy_level}
     return {
-        **video_brief(v),
+        **video_brief(v, lang),
         "store_id": v.store_id,
         "menu": menu,
         "status": v.job_status,

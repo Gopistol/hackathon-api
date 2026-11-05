@@ -488,9 +488,9 @@ def split_script(text: str, limit: int | None = MAX_SCRIPT_LINES) -> list[str]:
     return lines if limit is None else lines[:limit]
 
 
-def merchant_script_fallback(text: str, langs: list[str]) -> dict[str, list[str]]:
-    """번역이 안 되면 다른 언어 자막도 한국어 원문을 쓴다."""
-    ko = split_script(text) or [text.strip()[:_LINE_CHARS]]
+def merchant_script_fallback(text: str, langs: list[str], limit: int | None = MAX_SCRIPT_LINES) -> dict[str, list[str]]:
+    """번역이 안 되면 다른 언어 자막도 한국어 원문을 쓴다. limit=None 이면 줄 수로 자르지 않는다(목소리 영상)."""
+    ko = split_script(text, limit) or [text.strip()[:_LINE_CHARS]]
     return {"ko": ko, **{lang: ko for lang in langs if lang != "ko"}}
 
 
@@ -501,9 +501,11 @@ def _same_length_lines(data: dict, lang: str, n: int) -> list[str] | None:
     return None
 
 
-async def merchant_script(llm: LLMProvider, text: str, langs: list[str]) -> dict[str, list[str]]:
+async def merchant_script(
+    llm: LLMProvider, text: str, langs: list[str], limit: int | None = MAX_SCRIPT_LINES
+) -> dict[str, list[str]]:
     """사장님 문장은 그대로 줄만 나눠 한국어 자막으로 쓰고, AI 는 번역만 한다. 실패하면 다른 언어도 한국어 원문."""
-    script = merchant_script_fallback(text, langs)
+    script = merchant_script_fallback(text, langs, limit)
     if is_mock(llm):
         return script
     ko = script["ko"]
