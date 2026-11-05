@@ -4,7 +4,6 @@ import pytest
 
 from app.llm import get_llm
 from app.main import app
-from app.services.interview import _exact_span
 from app.services.video import find_span
 from tests.test_video import _jpeg, _make
 from tests.utils import assert_error
@@ -25,7 +24,7 @@ def _talk(client, iid: int, n: int) -> dict:
 def test_register_interview_flows_into_existing_publish(client) -> None:
     start = client.post(BASE, json={"kind": "register"}).json()
     assert start["say_ko"] and start["turn"] == 0 and not start["done"]
-    assert [f["text"] for f in start["fillers"]] and all(f["audio_url"] is None for f in start["fillers"])  # mock
+    assert start["fillers"] == []  # 맞장구는 거슬린다는 의견이 있어 쓰지 않는다
     iid = start["interview_id"]
 
     # mock: 지금 묻는 주제에 맞는 고정 답 → 필수 5개를 채우면 끝
@@ -113,23 +112,52 @@ def test_llm_cannot_finish_before_required_fields(client) -> None:
     assert out["say_ko"].startswith("떡집이군요")
 
 
-def test_compose_drops_quotes_not_in_transcript(client) -> None:
-    iid = client.post(BASE, json={"kind": "story", "store_id": 2}).json()["interview_id"]
+def _story_turns(client, store_id: int = 2) -> int:
+    iid = client.post(BASE, json={"kind": "story", "store_id": store_id}).json()["interview_id"]
     for text in ["30년 전에 남편이랑 이 자리에서 시작했어요. 처음엔 꽈배기만 팔았죠.", "매일 새벽 네 시에 반죽을 해요."]:
         client.post(f"{BASE}/{iid}/turns", data={"text": text})
-    fake = FakeLLM([{"quotes": [{"turn": 0, "text": "지어낸 문장이에요"}]}])
+    return iid
+
+
+def test_narration_with_invented_facts_falls_back_to_quotes(client) -> None:
+    iid = _story_turns(client)
+    made_up = {"lines": ["1970년에 시작한 우리 가게는요.", "대통령상도 받았어요.", "남편이랑 이 자리에서 꽈배기를 팔았어요.", "놀러 오세요."]}
+    fake = FakeLLM([made_up])
     app.dependency_overrides[get_llm] = lambda: fake
     try:
         client.post(f"{BASE}/{iid}/finish")
     finally:
         app.dependency_overrides.pop(get_llm)
-    quotes = client.get(f"{BASE}/{iid}").json()["quotes"]
-    assert quotes and all("지어낸" not in q["text"] for q in quotes)
+    detail = client.get(f"{BASE}/{iid}").json()
+    assert "1970" not in detail["script_ko"] and "대통령상" not in detail["script_ko"]
+    assert "남편이랑 이 자리에서" in detail["script_ko"]  # 원문 구간으로 대신
+    assert detail["quotes"]
 
 
-def test_exact_span_and_find_span() -> None:
-    assert _exact_span("음 그러니까 40년  동안 떡볶이만 했어요", "40년 동안 떡볶이만 했어요.") == "40년  동안 떡볶이만 했어요"
-    assert _exact_span("떡볶이만 했어요", "순대만 했어요") is None
+def test_narration_tells_one_story_and_becomes_the_video(client) -> None:
+    iid = _story_turns(client, store_id=1)
+    story = {"lines": ["30년 전에 남편이랑 이 자리에서 시작했어요.", "처음엔 꽈배기만 팔았지요.",
+                       "지금도 매일 새벽 네 시에 반죽을 해요.", "따뜻할 때 꼭 드시고 가세요."]}  # fmt: skip
+    fake = FakeLLM([story])
+    app.dependency_overrides[get_llm] = lambda: fake
+    try:
+        client.post(f"{BASE}/{iid}/finish")
+        r = client.post(
+            "/api/v1/merchant/stores/1/videos",
+            files=[("photos", ("0.jpg", _jpeg("red"), "image/jpeg"))],
+            data={"interview_id": str(iid)},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm)
+    detail = client.get(f"{BASE}/{iid}").json()
+    assert detail["script_ko"].startswith("30년 전에 남편이랑")
+    job = client.get(f"/api/v1/merchant/videos/jobs/{r.json()['job_id']}").json()
+    assert job["status"] == "done", job
+    video = client.get(f"/api/v1/videos/{job['video_id']}").json()
+    assert video["script_source"] == "interview" and video["script_ko"][0].startswith("30년 전에")
+
+
+def test_find_span() -> None:
     chars = [(c, i * 0.1, i * 0.1 + 0.1) for i, c in enumerate("어 40년 동안")]
     assert find_span(chars, "40년 동안") == pytest.approx((0.2, 0.8))
     assert find_span(chars, "없는 말") is None

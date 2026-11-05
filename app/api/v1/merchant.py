@@ -212,7 +212,7 @@ async def create_video(
     script: str | None = Form(None, max_length=1000, description="영상 자막 스크립트 (선택). 그대로 자막이 된다"),
     audio: UploadFile | None = File(None, description="스크립트 대신 녹음 (선택). 글자로 바꿔 자막에만 쓰고, 영상에 소리는 넣지 않는다"),
     interview_id: int | None = Form(
-        None, description="끝난 이야기 인터뷰 (선택). 사장님 원음 구간을 이어 붙여 목소리·자막으로 쓴다. script·audio 보다 우선"
+        None, description="이야기 인터뷰 (선택). AI 가 쓴 이야기를 시장 할머니 목소리로 읽는다 (못 쓰면 사장님 원음 구간). script·audio 보다 우선"
     ),
     menu_id: int | None = Form(None),
     langs: list[str] = Form(None, description="자막 언어. 기본 en, zh (langs 또는 langs[], 콤마 구분도 가능)"),
@@ -232,7 +232,7 @@ async def create_video(
         )
     if menu_id is not None and not any(m.id == menu_id for m in store.menus):
         raise not_found("메뉴")
-    quotes = None
+    quotes, narration = None, None
     if interview_id is not None:
         iv = interview.get(db, interview_id)
         if iv.kind != "story" or iv.store_id != store_id:
@@ -242,6 +242,7 @@ async def create_video(
         await interview.compose(db, llm, iv)
         # 이야기가 거의 없으면 quotes 가 비고, 그때는 가게 기본 정보로 영상을 만든다
         quotes = interview.video_quotes(iv)
+        narration = iv.result.get("narration")
     raw_langs = langs or form.getlist("langs[]") or ["en", "zh"]
     langs = [x for x in dict.fromkeys(l.strip() for v in raw_langs for l in str(v).split(",")) if x in LANGS and x != "ko"]
 
@@ -255,7 +256,8 @@ async def create_video(
             # 디코딩은 무거워서 이벤트 루프 밖에서 한다.
             await asyncio.to_thread(video.prepare_photo, data, wd / f"photo_{i}.jpg")
         if quotes:
-            (wd / "interview.json").write_text(json.dumps({"quotes": quotes}, ensure_ascii=False), encoding="utf-8")
+            story = {"quotes": quotes, "narration": narration}
+            (wd / "interview.json").write_text(json.dumps(story, ensure_ascii=False), encoding="utf-8")
         elif script and script.strip():
             (wd / "script.txt").write_text(script.strip(), encoding="utf-8")
         elif audio:  # 스크립트가 있으면 녹음은 쓰지 않는다
