@@ -6,7 +6,9 @@
 
 import csv
 import logging
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,13 +19,15 @@ from app.core.config import get_settings
 from app.db.session import Base, SessionLocal, engine, init_db
 from app.models import Content, Market, Menu, Store, Video
 from app.services.i18n import glossary_translate, save_translations
-from app.services.video import write_vtt
+from app.services.video import ffmpeg_exe, write_vtt
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEMO = ROOT / "demo"
 MARKETS_CSV = DEMO / "markets.csv"
+# 발표용 고퀄 영상. 있으면 임시 영상 대신 이것만 피드에 넣는다.
+SHOWCASE = DEMO / "showcase"
 DISTRICT = "서대문구"
 
 
@@ -96,6 +100,7 @@ def seed() -> None:
         db.flush()
 
         per_market: dict[int, int] = {}
+        stores: list[tuple[Store, dict]] = []
         for s in seed_data.STORES:
             market = _find_market(markets, s["market"])
             idx = per_market.get(market.id, 0)
@@ -119,7 +124,20 @@ def seed() -> None:
             )
             for menu in store.menus:
                 save_translations(db, "menu", menu.id, {lang: glossary_translate(menu.name_ko, lang) for lang in ("en", "zh")})
-            _seed_video(db, store, s, media)
+            stores.append((store, s))
+
+        showcase = showcase_keys()
+        if showcase:
+            # 발표용 영상이 있으면 그것만 넣는다. 피드는 최신순이라 거꾸로 넣어 STORES 순서대로 보이게 한다.
+            for store, s in reversed(stores):
+                if s["key"] in showcase:
+                    _seed_showcase(db, store, s["key"], media)
+            unknown = showcase - {s["key"] for s in seed_data.STORES}
+            if unknown:
+                logger.warning("demo/showcase 에 가게 key 와 맞지 않는 영상이 있어 건너뜁니다: %s", sorted(unknown))
+        else:
+            for store, s in stores:
+                _seed_video(db, store, s, media)
 
         for c in seed_data.CONTENTS:
             db.add(Content(title=c["title"], title_i18n=c["i18n"], platform=c["platform"], genre=c["genre"], foods=c["foods"]))
@@ -160,6 +178,56 @@ def _seed_video(db, store: Store, s: dict, media: Path) -> None:
             thumbnail_path=f"thumbs/{src_thumb.name}" if src_thumb.exists() else None,
             subtitles=subtitles,
             script=s["script"],
+            duration=duration,
+            is_demo=True,
+        )
+    )
+
+
+def showcase_keys() -> set[str]:
+    return {p.stem for p in SHOWCASE.glob("*.mp4")} if SHOWCASE.exists() else set()
+
+
+def _probe(src: Path, thumb_dst: Path | None) -> float | None:
+    """ffmpeg 로 길이(초)를 읽고, thumb_dst 가 있으면 1초 지점 프레임을 썸네일로 저장한다."""
+    args = [ffmpeg_exe(), "-hide_banner", "-i", str(src)]
+    if thumb_dst:
+        thumb_dst.parent.mkdir(parents=True, exist_ok=True)
+        args = [ffmpeg_exe(), "-hide_banner", "-y", "-ss", "1", "-i", str(src), "-frames:v", "1", "-vf", "scale=720:-2", str(thumb_dst)]
+    out = subprocess.run(args, capture_output=True, text=True, timeout=30).stderr
+    m = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", out)
+    return round(int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]), 2) if m else None
+
+
+def _seed_showcase(db, store: Store, key: str, media: Path) -> None:
+    """demo/showcase/<key>.mp4 (+ 선택: <key>.jpg 썸네일, <key>.<lang>.vtt 자막) 을 피드용 영상으로 넣는다."""
+    src = SHOWCASE / f"{key}.mp4"
+    name = f"showcase-{key}"
+    (media / "videos").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, media / "videos" / f"{name}.mp4")
+    thumb = media / "thumbs" / f"{name}.jpg"
+    if (SHOWCASE / f"{key}.jpg").exists():
+        thumb.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SHOWCASE / f"{key}.jpg", thumb)
+        duration = _probe(src, None)
+    else:
+        duration = _probe(src, thumb)
+    subtitles = {}
+    for lang in ("ko", "en", "zh"):
+        vtt = SHOWCASE / f"{key}.{lang}.vtt"
+        if vtt.exists():
+            (media / "subs").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(vtt, media / "subs" / f"{name}.{lang}.vtt")
+            subtitles[lang] = f"subs/{name}.{lang}.vtt"
+    db.add(
+        Video(
+            store_id=store.id,
+            menu_id=store.menus[0].id,
+            job_status="done",
+            progress=100,
+            video_path=f"videos/{name}.mp4",
+            thumbnail_path=f"thumbs/{name}.jpg" if thumb.exists() else None,
+            subtitles=subtitles,
             duration=duration,
             is_demo=True,
         )

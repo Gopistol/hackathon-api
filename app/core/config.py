@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     google_maps_api_key: SecretStr = SecretStr("")
     # POST /api/v1/admin/reset 의 X-Admin-Token. 비어 있으면 리셋 엔드포인트가 꺼진다.
     admin_token: SecretStr = SecretStr("")
+    # true 면 피드에 시드한 시연 영상만 보인다. 실시간 생성 영상은 /videos/{id} 와 가게 상세에만 나온다.
+    feed_demo_only: bool = True
     # 비우면 PATH 의 ffmpeg, 없으면 imageio-ffmpeg 내장 바이너리
     ffmpeg_path: str = ""
 

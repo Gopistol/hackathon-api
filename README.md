@@ -48,7 +48,13 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 리셋은 DB 테이블, 생성된 영상·자막, 사장님 음성을 지우고 시드를 다시 넣는다.
 
 - **시장**: `demo/markets.csv`(전국전통시장표준데이터 CSV, [data.go.kr](https://www.data.go.kr/data/15012894/standard.do))가 있으면 서대문구만 넣는다. 없으면 영천·포방터 2곳을 대략 좌표로 넣는다.
-- **시연용 영상**: `demo/media/` 의 미리 렌더링한 영상 5개가 피드에 항상 있다. 실제 사진은
+- **발표용 영상 (우선)**: `demo/showcase/<가게 key>.mp4` 를 넣으면 임시 영상 대신 **이 영상만** 피드에 나온다.
+  - 가게 key: `yeongcheon-oil`, `yeongcheon-donut`, `dongnimmun-bunsik`, `pobangteo-tteokbokki`, `hongeun-bindaetteok` (`app/seed_data.py`)
+  - 선택: `<key>.jpg` 썸네일(없으면 1초 지점에서 자동 추출), `<key>.ko.vtt`·`<key>.en.vtt`·`<key>.zh.vtt` 자막(없으면 자막 없음, 자막을 영상에 구웠다면 안 넣어도 됨)
+  - 피드 순서는 위 key 순서. 파일당 100MB 미만(GitHub 제한), 무대 재생을 생각하면 20MB 이하 권장
+  - 넣은 뒤: 커밋 → `bash deploy/deploy.sh` → 리셋
+- **실시간 생성 영상**: `FEED_DEMO_ONLY=true`(기본)면 피드에 올라가지 않는다. 진행률·`/videos/{id}`·가게 상세에서만 보인다.
+- **임시 영상**: 발표용 영상이 없을 때 `demo/media/` 의 미리 렌더링한 영상 5개가 피드에 나온다. 실제 사진은
   `demo/photos/<가게 key>/` 에 3~5장 넣고 `.venv/bin/python scripts/make_demo_media.py` → 커밋 → 배포 → 리셋.
 
 ## 환경변수
@@ -66,6 +72,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | `MEDIA_DIR` / `AUDIO_DIR` | `./data/media` / `./data/audio` | 서버: `/opt/hackathon/data/media`, `/opt/hackathon/data/audio` (**절대경로 필수**. 상대경로면 배포 때 지워짐) |
 | `ADMIN_TOKEN` | | 리셋 엔드포인트 토큰. 비우면 리셋 꺼짐 |
 | `GOOGLE_MAPS_API_KEY` | | (선택) 서버 IP 로 제한한 Geocoding 키. 비우면 가게 좌표 = 시장 좌표 근처 |
+| `FEED_DEMO_ONLY` | `true` | 피드에 시연 영상만. 실시간 생성 영상은 피드 제외 |
 | `FFMPEG_PATH` | | 비우면 PATH → imageio-ffmpeg |
 
 ## API 요약 (`/api/v1`, 언어 `lang=ko|en|zh`, 기본 en)

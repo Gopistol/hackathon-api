@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.errors import ERROR_RESPONSES, AppError, not_found
 from app.db.session import get_db
 from app.models import Content, Market, Menu, Store, Video
@@ -93,6 +94,8 @@ def feed(lang: Lang = LangQ, cursor: int | None = Query(None, description="Ïù¥Ï†
     )
     if cursor is not None:
         q = q.where(Video.id < cursor)
+    if get_settings().feed_demo_only:
+        q = q.where(Video.is_demo.is_(True))
     videos = list(db.scalars(q))
     has_more = len(videos) > FEED_PAGE
     videos = videos[:FEED_PAGE]
