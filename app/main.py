@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,3 +48,5 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(v1.router)
 app.mount("/media", StaticFiles(directory=settings.media_path), name="media")
+# 통화형 AI 인터뷰를 브라우저에서 바로 시험하는 참고용 페이지 (프론트 구현 예시)
+app.mount("/demo", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="demo")

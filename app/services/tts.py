@@ -5,6 +5,7 @@
 주소를 null 로 두어 지금처럼 글자로만 보인다.
 """
 
+import asyncio
 import hashlib
 import logging
 from pathlib import Path
@@ -44,8 +45,37 @@ def audio_url(llm: LLMProvider, text: str | None) -> str | None:
     return f"{URL_PREFIX}/{key}.mp3"
 
 
+# 미리 만들기 시작한 음성. 프론트가 주소를 받자마자 재생해도 기다림이 짧다.
+_making: dict[str, asyncio.Task] = {}
+
+
+def prepare(llm: LLMProvider, text: str | None) -> str | None:
+    """audio_url 과 같지만 음성을 바로 만들기 시작한다 (통화형 인터뷰용)."""
+    url = audio_url(llm, text)
+    if url:
+        key = url.rsplit("/", 1)[1].removesuffix(".mp3")
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # 동기 함수에서 부르면 재생할 때 만든다
+            return url
+        if key not in _making and not (_dir() / f"{key}.mp3").exists():
+            task = loop.create_task(_make(llm, key))
+            _making[key] = task
+            task.add_done_callback(lambda t: (_making.pop(key, None), t.cancelled() or t.exception()))
+    return url
+
+
 async def audio_file(llm: LLMProvider, key: str) -> Path | None:
     """주소의 mp3. 아직 없으면 만든다. 등록되지 않은 문장이면 None."""
+    if task := _making.get(key):
+        try:
+            return await asyncio.shield(task)
+        except Exception:
+            pass  # 아래에서 한 번 더 시도한다
+    return await _make(llm, key)
+
+
+async def _make(llm: LLMProvider, key: str) -> Path | None:
     mp3, note = _dir() / f"{key}.mp3", _dir() / f"{key}.txt"
     if mp3.exists():
         return mp3

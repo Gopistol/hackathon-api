@@ -23,6 +23,9 @@ class Store(Base):
     payment: Mapped[list] = mapped_column(JSON, default=list)
     hours: Mapped[str] = mapped_column(String(200), default="")
     story_ko: Mapped[str] = mapped_column(Text, default="")
+    # AI 인터뷰로 등록한 가게: 업종(분식, 건어물 …)과 업종별 정보({"원산지": "국산"})
+    category: Mapped[str | None] = mapped_column(String(30), default=None)
+    extras: Mapped[dict | None] = mapped_column(JSON, default=None)
     # draft | published
     status: Mapped[str] = mapped_column(String(20), default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -42,6 +45,8 @@ class Menu(Base):
     spicy_level: Mapped[int] = mapped_column(Integer, default=0)
     # AI 가 추측한 값(가격·맵기 등)이 섞여 있으면 True
     is_ai_guess: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 가격 단위 ("100g", "한 봉지"). 없으면 1인분·1개
+    unit: Mapped[str | None] = mapped_column(String(30), default=None)
 
 
 class Translation(Base):

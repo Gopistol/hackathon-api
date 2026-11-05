@@ -17,7 +17,7 @@ app/
 ├── api/v1/merchant.py   # 음성 등록 세션, 영상 생성 job, 가게·메뉴 수정
 ├── api/v1/admin.py      # 데모 리셋
 ├── services/ai.py       # STT·단계별 정리·번역·자막 (mock/실패 시 대체 동작 포함)
-├── services/onboarding.py, video.py (ffmpeg), maps.py (Google), i18n.py (언어·음식 용어집), views.py
+├── services/onboarding.py, interview.py (통화형 AI 인터뷰), video.py (ffmpeg), maps.py (Google), i18n.py (언어·음식 용어집), views.py
 ├── models/, schemas/
 ├── seed.py, seed_data.py  # 멱등 시드·리셋, 시연용 가게 5개·K-콘텐츠 3개
 ├── prompts.py           # LLM 프롬프트
@@ -90,7 +90,13 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | POST | `/merchant/onboarding/sessions/{id}/confirm` | `{step, accepted, edits?}` |
 | GET | `/merchant/onboarding/sessions/{id}/summary` | 단계별 값, `needs_check`, `preview_en` |
 | POST | `/merchant/onboarding/sessions/{id}/publish` | 저장 + 번역 → `{store_id}` |
-| POST | `/merchant/stores/{id}/videos` | multipart `photos`(1~5), `script`(선택), `audio`(선택, 스크립트 대신), `menu_id`, `langs` → 202 `{job_id}`. 20~30초 무음 영상 |
+| POST | `/merchant/interviews` | 통화형 AI 인터뷰 시작 `{kind: register\|story, store_id?, market_id?}` → 첫 질문 `say_ko`, `audio_url` |
+| POST | `/merchant/interviews/{id}/turns` | multipart `audio` 또는 `text`, `turn` → 맞장구+다음 질문, `done`, `progress`, `draft`(register) |
+| POST | `/merchant/interviews/{id}/finish` | 그만하기 |
+| GET | `/merchant/interviews/{id}` | 결과: register `draft`·`needs_check`·`session_id` / story `quotes`·`script_ko` |
+| PATCH | `/merchant/interviews/{id}/draft` | register 결과 고치기 |
+| POST | `/merchant/interviews/{id}/publish` | register → `{store_id}` |
+| POST | `/merchant/stores/{id}/videos` | multipart `photos`(1~5), `interview_id`(선택, 이야기 인터뷰 원음), `script`(선택), `audio`(선택, 스크립트 대신), `menu_id`, `langs` → 202 `{job_id}` |
 | GET | `/merchant/videos/jobs/{job_id}` | `queued/processing/done/failed`, `progress` |
 | PATCH | `/merchant/stores/{id}`, `/merchant/menus/{id}` | 수정 + 번역 재생성 (P1) |
 | GET | `/contents`, `/contents/{id}/foods` | K-콘텐츠 (P1) |
@@ -99,6 +105,21 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 - 미디어 URL(`/media/...`)은 상대경로다. 프론트에서 API 주소를 앞에 붙인다.
 - 에러: `{"error": {"code": "STT_FAILED", "message": "..."}}`. 코드: `VALIDATION_ERROR`, `NOT_FOUND`, `STT_FAILED`,
   `LLM_FAILED`, `UPLOAD_TOO_LARGE`, `INVALID_IMAGE`, `STEP_MISMATCH`, `NO_ANSWER`, `ONBOARDING_INCOMPLETE`, `ONBOARDING_DONE`, `FORBIDDEN`, `INTERNAL_ERROR`
+
+### 통화형 AI 인터뷰
+
+기존 등록(고정 질문 5개 + 맞아요/다시)은 그대로 두고 추가한 기능이다. 참고용 웹 페이지: `/demo/interview.html`
+
+- **흐름 (버튼 없이)**: AI 음성 재생 → 끝나면 바로 녹음 → 말이 1.3초 멈추면 `turns` 로 전송 → 다음 AI 음성 … `done` 이면 멈춘다.
+  말 끝 감지·녹음은 브라우저가 한다 (참고 페이지의 `listen()`). AI 가 말하는 동안에는 녹음하지 않는다(에코 방지).
+- **한 턴**: 음성 인식 1번 + LLM 1번 (실측 1~3초). `audio_url` 음성은 응답과 동시에 만들기 시작한다.
+- **register**: 가게 이름 → 업종 → 상품·가격(업종별 단위) → 결제 → 영업시간을 묻고, 업종별 질문(원산지, 맵기, 택배 등) 최대 2개 뒤 끝낸다.
+  사장님이 말로 고치면 다음 턴에 반영. 끝나면 기존 등록 세션(done)이 생겨 `/onboarding/sessions/{session_id}/summary` 미리보기를 그대로 쓴다.
+- **story**: 시작·세월·손맛·사람·한마디 축으로 꼬리 질문. 같은 축은 두 번까지만 묻는다. 시작 + 2개 축 + 구체적 일화가 나오면 끝낸다.
+  끝나면 AI 가 답에서 **사장님 말 그대로인** 구간 2~5개(20~30초)를 고른다(원문에 없는 문장은 버림). 가게 `story_ko` 도 이 말로 바뀐다.
+- **영상**: `interview_id` 를 주면 고른 구간을 원래 녹음에서 잘라 이어 붙여 목소리로 쓴다(ElevenLabs 음성 맞추기로 구간 시간 찾기, 실패하면 그 답 전체).
+- 종료는 LLM 이 제안하고 서버 규칙(필수 항목, 최대 턴 register 12·story 8, "그만할게요")으로 확정한다.
+- LLM 실패·mock: 고정 질문 + 규칙 기반 정리로 같은 흐름. 음성 인식 실패는 에러 대신 `heard: false` 로 같은 질문을 다시 한다.
 
 ### 영상 생성 규칙
 

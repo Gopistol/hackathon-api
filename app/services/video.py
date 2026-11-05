@@ -11,6 +11,7 @@
 
 import asyncio
 import io
+import json
 import logging
 import math
 import re
@@ -316,6 +317,70 @@ async def align(voice: Path, text: str) -> subtitles.Alignment | None:
         return None
 
 
+# ---------- 이야기 인터뷰 원음 이어 붙이기 ----------
+
+QUOTE_GAP = 0.35  # 구간 사이 쉼(초)
+
+
+def find_span(chars: list[tuple[str, float, float]], quote: str) -> tuple[float, float] | None:
+    """글자별 시간(음성 맞추기 결과)에서 quote 의 (시작초, 끝초). 띄어쓰기는 무시한다."""
+    idx = [i for i, (c, _, _) in enumerate(chars) if c.strip()]
+    flat = "".join(chars[i][0] for i in idx)
+    target = "".join(quote.split())
+    pos = flat.find(target) if target else -1
+    if pos < 0:
+        return None
+    return chars[idx[pos]][1], chars[idx[pos + len(target) - 1]][2]
+
+
+async def stitch_quotes(quotes: list[dict], wd: Path) -> tuple[Path | None, str]:
+    """인터뷰 녹음에서 고른 구간만 잘라 이어 붙인다 → (목소리 mp3, 그 목소리의 글).
+
+    구간 시간은 ElevenLabs 음성 맞추기로 찾는다. 못 찾으면 그 답 전체를 쓰고 글도 답 전체로 바꾼다.
+    30초를 넘으면 뒤 구간부터 뺀다. 녹음을 못 읽으면 목소리 없이 고른 글만 돌려준다(자막 영상)."""
+    def joined(parts: list[str]) -> str:
+        return " ".join(t if t[-1] in ".!?~" else f"{t}." for t in parts if t)
+
+    text = joined([q["text"] for q in quotes])
+    mp3s: dict[str, Path | None] = {}
+    aligned: dict[str, list | None] = {}
+    segments: list[tuple[Path, float, float, str]] = []
+    for q in quotes:
+        src = q.get("audio_path")
+        if not src or not Path(src).exists():
+            continue
+        if src not in mp3s:
+            mp3s[src] = await to_mp3(Path(src), wd / f"turn_{len(mp3s)}.mp3")
+            aligned[src] = await align(mp3s[src], q["transcript"]) if mp3s[src] else None
+        mp3 = mp3s[src]
+        if not mp3:
+            continue
+        span = find_span(aligned[src], q["text"]) if aligned[src] else None
+        if span:
+            segments.append((mp3, max(span[0] - 0.12, 0.0), span[1] + 0.25, q["text"]))
+        elif not any(s[0] == mp3 for s in segments):  # 답 전체는 한 번만
+            segments.append((mp3, 0.0, await media_seconds(mp3) or 0.0, q["transcript"]))
+    while segments and sum(e - s for _, s, e, _ in segments) + QUOTE_GAP * (len(segments) - 1) > MAX_SECONDS:
+        segments.pop()
+    if not segments:
+        return None, text
+    args = ["-loglevel", "error"]
+    for mp3, start, end, _ in segments:
+        args += ["-ss", f"{start:.2f}", "-to", f"{end:.2f}", "-i", str(mp3.resolve())]
+    n = len(segments)
+    pads = "".join(f"[{i}:a]apad=pad_dur={QUOTE_GAP if i < n - 1 else 0}[a{i}];" for i in range(n))
+    out = wd / "voice_ko.mp3"
+    try:
+        await _ffmpeg(
+            [*args, "-filter_complex", pads + "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[a]",
+             "-map", "[a]", "-ac", "1", "-ar", "44100", "-b:a", "128k", str(out.resolve())],
+            60,
+        )  # fmt: skip
+    except RuntimeError:
+        return None, text
+    return out, joined([seg[3] for seg in segments])
+
+
 # ---------- 시작 제목·끝 정보 카드 ----------
 
 _PAYMENT = {
@@ -381,12 +446,17 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             photos = sorted(wd.glob("photo_*.jpg"))
             audio = next(iter(sorted(wd.glob("audio.*"))), None)
             script_file = wd / "script.txt"
-            # 자막 원문: 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보.
+            interview_file = wd / "interview.json"
+            # 자막 원문: 이야기 인터뷰 구간 → 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보.
             merchant_text = script_file.read_text(encoding="utf-8").strip() if script_file.exists() else ""
             source = "script" if merchant_text else "auto"
             # 녹음은 소리로도 쓴다. 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다.
             voice_ko = await to_mp3(audio, wd / "voice_ko.mp3") if audio and not merchant_text else None
-            if not merchant_text and audio:
+            if interview_file.exists():
+                quotes = json.loads(interview_file.read_text(encoding="utf-8"))["quotes"]
+                voice_ko, merchant_text = await stitch_quotes(quotes, wd)
+                source = "interview"
+            elif not merchant_text and audio:
                 try:
                     merchant_text = await asyncio.wait_for(
                         ai.transcribe(llm, audio.read_bytes(), audio.name, "story"), STT_BUDGET
@@ -400,7 +470,7 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                         raise RecordingTooLong
                 elif source == "stt" and len(ai.split_script(merchant_text, limit=None)) > ai.MAX_SCRIPT_LINES:
                     raise RecordingTooLong
-            if source != "stt":
+            if source not in ("stt", "interview"):
                 voice_ko = None
             store = db.get(Store, video.store_id)
             menu = db.get(Menu, video.menu_id) if video.menu_id else None

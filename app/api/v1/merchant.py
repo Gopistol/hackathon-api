@@ -1,6 +1,7 @@
 """사장님 API: 음성 대화형 등록, 숏폼 생성, 가게·메뉴 수정(P1)."""
 
 import asyncio
+import json
 import shutil
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Path, Request, UploadFile
@@ -17,6 +18,10 @@ from app.schemas.merchant import (
     AnswerOut,
     ConfirmIn,
     ConfirmOut,
+    DraftPatch,
+    InterviewOut,
+    InterviewStartIn,
+    InterviewTurnOut,
     JobCreated,
     JobStatus,
     MenuPatch,
@@ -26,7 +31,7 @@ from app.schemas.merchant import (
     StorePatch,
     SummaryOut,
 )
-from app.services import onboarding, tts, video
+from app.services import interview, onboarding, tts, video
 from app.services.ai import MAX_SCRIPT_LINES, audio_ext, split_script
 from app.services.i18n import LANGS
 
@@ -113,6 +118,77 @@ async def publish(session_id: int, db: Session = Depends(get_db), llm: LLMProvid
     return await onboarding.publish(db, llm, onboarding.get_session(db, session_id))
 
 
+# ---------- AI 인터뷰 (통화형) ----------
+# 프론트: say_ko 음성 재생 → 끝나면 자동으로 녹음 → 말이 1~1.5초 멈추면 turns 로 보냄 → 반복. done 이면 멈춘다.
+
+
+@router.post("/interviews", response_model=InterviewTurnOut, summary="AI 인터뷰 시작 (첫 질문)")
+async def start_interview(body: InterviewStartIn, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    return interview.start(db, llm, body.kind, body.store_id, body.market_id)
+
+
+@router.post("/interviews/{interview_id}/turns", response_model=InterviewTurnOut, summary="답 보내기 → 다음 질문")
+async def interview_turn(
+    interview_id: int,
+    background: BackgroundTasks,
+    audio: UploadFile | None = File(None, description="한 번의 답 녹음 (10MB 이하)"),
+    text: str | None = Form(None, max_length=2000, description="음성 대신 글로 답할 때"),
+    turn: int | None = Form(None, description="받은 turn 번호. 다르면 409 TURN_MISMATCH"),
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm),
+):
+    iv = interview.get(db, interview_id)
+    data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일") if audio else None
+    if not data and not (text and text.strip()):
+        raise AppError("VALIDATION_ERROR", "audio 또는 text 중 하나를 보내 주세요.", 422)
+    out = await interview.turn(db, llm, iv, data, audio.filename if audio else "", text, turn)
+    _after_done(background, iv, llm, out["done"])
+    return out
+
+
+@router.post("/interviews/{interview_id}/finish", response_model=InterviewTurnOut, summary="인터뷰 그만하기")
+async def finish_interview(
+    interview_id: int, background: BackgroundTasks, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)
+):
+    iv = interview.get(db, interview_id)
+    out = interview.finish(db, llm, iv)
+    _after_done(background, iv, llm, True)
+    return out
+
+
+def _after_done(background: BackgroundTasks, iv, llm: LLMProvider, done: bool) -> None:
+    if not done:
+        return
+    if iv.kind == "register" and iv.status == "done":
+        background.add_task(onboarding.prefetch_translations, iv.result["session_id"], llm)
+    elif iv.kind == "story":
+        background.add_task(interview.compose_in_background, iv.id, llm)
+
+
+@router.get("/interviews/{interview_id}", response_model=InterviewOut, summary="인터뷰 결과")
+def get_interview(interview_id: int, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    return interview.detail(interview.get(db, interview_id), llm)
+
+
+@router.patch("/interviews/{interview_id}/draft", response_model=InterviewOut, summary="등록 내용 고치기 (register)")
+def edit_interview_draft(
+    interview_id: int,
+    body: DraftPatch,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm),
+):
+    iv = interview.get(db, interview_id)
+    interview.edit_draft(db, iv, body.model_dump(exclude_unset=True))
+    background.add_task(onboarding.prefetch_translations, iv.result["session_id"], llm)
+    return interview.detail(iv, llm)
+
+
+@router.post("/interviews/{interview_id}/publish", response_model=PublishOut, summary="가게 올리기 (register)")
+async def publish_interview(interview_id: int, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    return await interview.publish(db, llm, interview.get(db, interview_id))
+
+
 # ---------- 숏폼 생성 ----------
 
 
@@ -124,6 +200,9 @@ async def create_video(
     photos: list[UploadFile] = File(None, description="사진 1~5장 (필드 이름 photos 또는 photos[])"),
     script: str | None = Form(None, max_length=1000, description="영상 자막 스크립트 (선택). 그대로 자막이 된다"),
     audio: UploadFile | None = File(None, description="스크립트 대신 녹음 (선택). 글자로 바꿔 자막에만 쓰고, 영상에 소리는 넣지 않는다"),
+    interview_id: int | None = Form(
+        None, description="끝난 이야기 인터뷰 (선택). 사장님 원음 구간을 이어 붙여 목소리·자막으로 쓴다. script·audio 보다 우선"
+    ),
     menu_id: int | None = Form(None),
     langs: list[str] = Form(None, description="자막 언어. 기본 en, zh (langs 또는 langs[], 콤마 구분도 가능)"),
     db: Session = Depends(get_db),
@@ -142,6 +221,17 @@ async def create_video(
         )
     if menu_id is not None and not any(m.id == menu_id for m in store.menus):
         raise not_found("메뉴")
+    quotes = None
+    if interview_id is not None:
+        iv = interview.get(db, interview_id)
+        if iv.kind != "story" or iv.store_id != store_id:
+            raise AppError("VALIDATION_ERROR", "이 가게의 이야기 인터뷰가 아니에요.", 422)
+        if iv.status == "active":
+            raise AppError("INTERVIEW_ACTIVE", "이야기 인터뷰를 먼저 끝내 주세요.", 409)
+        await interview.compose(db, llm, iv)
+        quotes = interview.video_quotes(iv)
+        if not quotes:
+            raise AppError("NO_STORY", "인터뷰에서 영상에 쓸 이야기를 찾지 못했어요. 스크립트로 써 주세요.", 409)
     raw_langs = langs or form.getlist("langs[]") or ["en", "zh"]
     langs = [x for x in dict.fromkeys(l.strip() for v in raw_langs for l in str(v).split(",")) if x in LANGS and x != "ko"]
 
@@ -154,7 +244,9 @@ async def create_video(
             data = await _read_limited(f, MAX_PHOTO_BYTES, "사진")
             # 디코딩은 무거워서 이벤트 루프 밖에서 한다.
             await asyncio.to_thread(video.prepare_photo, data, wd / f"photo_{i}.jpg")
-        if script and script.strip():
+        if quotes:
+            (wd / "interview.json").write_text(json.dumps({"quotes": quotes}, ensure_ascii=False), encoding="utf-8")
+        elif script and script.strip():
             (wd / "script.txt").write_text(script.strip(), encoding="utf-8")
         elif audio:  # 스크립트가 있으면 녹음은 쓰지 않는다
             data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일")

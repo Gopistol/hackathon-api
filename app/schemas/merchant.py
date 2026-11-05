@@ -108,3 +108,55 @@ class MenuPatch(BaseModel):
         if v is None:
             raise ValueError("null 로 바꿀 수 없어요. 바꾸지 않으려면 필드를 빼 주세요.")
         return v
+
+
+# ---------- AI 인터뷰 (통화형) ----------
+
+
+class InterviewStartIn(BaseModel):
+    kind: Literal["register", "story"] = Field(description="register: 가게 정보 등록 / story: 숏폼용 사장님 이야기")
+    store_id: int | None = Field(None, description="story 는 필수. register 는 기존 가게를 다시 등록할 때만")
+    market_id: int | None = Field(None, description="register 새 가게가 속할 시장. 비우면 첫 번째 시장")
+
+
+class InterviewTurnOut(BaseModel):
+    interview_id: int
+    kind: str
+    turn: int = Field(description="다음 답을 보낼 때 같이 보낼 번호 (중복 전송 방지)")
+    transcript: str | None = Field(description="방금 알아들은 사장님 말")
+    heard: bool = Field(description="false 면 못 알아들어서 같은 질문을 다시 한다")
+    say_ko: str = Field(description="AI 가 할 말 (맞장구 + 다음 질문, 끝이면 마무리 인사)")
+    audio_url: str | None = Field(description="say_ko 음성. 받자마자 재생하고 끝나면 바로 듣기 시작. mock·실패 시 null")
+    done: bool = Field(description="true 면 마무리 인사를 재생하고 더 듣지 않는다")
+    progress: int = Field(description="0~100")
+    draft: dict | None = Field(
+        description="register 만. {store_name, category, items: [{name_ko, price, unit, spicy_level, is_ai_guess}], payment, hours, extras}"
+    )
+    covered: list[str] | None = Field(description="story 만. 이야기한 축 origin|years|craft|people|message")
+    mode: str
+
+
+class InterviewOut(BaseModel):
+    interview_id: int
+    kind: str
+    status: Literal["active", "done", "published"]
+    store_id: int | None
+    turns: list[dict] = Field(description="[{question, transcript}]")
+    draft: dict | None
+    needs_check: list[str]
+    session_id: int | None = Field(
+        description="register 가 끝나면 생기는 등록 세션. /onboarding/sessions/{id}/summary 로 외국인 화면 미리보기"
+    )
+    covered: list[str] | None
+    quotes: list[dict] | None = Field(description="story 가 끝나면 영상에 쓸 원음 구간 [{turn, text}]. 고르는 중이면 null")
+    script_ko: str | None
+    mode: str
+
+
+class DraftPatch(BaseModel):
+    store_name: str | None = Field(None, min_length=1, max_length=100)
+    category: str | None = Field(None, max_length=30)
+    items: list[dict] | None = Field(None, description="[{name_ko, price, unit, spicy_level}] 전체 목록")
+    payment: list[Literal["cash", "card", "foreign_card", "onnuri"]] | None = None
+    hours: str | None = Field(None, max_length=200)
+    extras: dict[str, str] | None = None
