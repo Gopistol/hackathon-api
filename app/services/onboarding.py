@@ -92,7 +92,8 @@ async def answer(
 
 
 def confirm(db: Session, s: OnboardingSession, step: str, accepted: bool, edits: dict | None) -> dict:
-    if step != s.step:
+    editing_completed = s.step == DONE and not s.published and bool(edits) and step in s.answers
+    if step != s.step and not editing_completed:
         raise AppError("STEP_MISMATCH", f"지금 단계는 '{s.step}' 입니다.", 409)
     entry = s.answers.get(step)
     if not entry and not edits:
@@ -109,8 +110,9 @@ def confirm(db: Session, s: OnboardingSession, step: str, accepted: bool, edits:
         return {"session_id": s.id, "done": False, "retry": True, **question(step)}
 
     s.answers = {**s.answers, step: {**entry, "confirmed": True}}
-    idx = ai.STEPS.index(step)
-    s.step = ai.STEPS[idx + 1] if idx + 1 < len(ai.STEPS) else DONE
+    if not editing_completed:
+        idx = ai.STEPS.index(step)
+        s.step = ai.STEPS[idx + 1] if idx + 1 < len(ai.STEPS) else DONE
     db.commit()
     if s.step == DONE:
         return {"session_id": s.id, "done": True, "retry": False, "step": DONE, "question_ko": None, "example_ko": None}

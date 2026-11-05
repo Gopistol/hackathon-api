@@ -79,3 +79,33 @@ def test_onboarding_errors(client) -> None:
     assert_error(client.post(f"{BASE}/{sid}/publish"), 409, "ONBOARDING_INCOMPLETE")
     assert_error(client.post(f"{BASE}/99999/answers", data={"text": "x"}), 404, "NOT_FOUND")
     assert_error(client.post(BASE, json={"store_id": 99999}), 404, "NOT_FOUND")
+
+
+def test_completed_registration_payment_can_be_edited_and_published(client) -> None:
+    sid = client.post(BASE, json={}).json()["session_id"]
+    _run_all_steps(client, sid)
+    before = client.get(f"{BASE}/{sid}/summary").json()
+    payment = ["cash", "card", "foreign_card", "onnuri"]
+
+    result = client.post(
+        f"{BASE}/{sid}/confirm",
+        json={"step": "payment", "accepted": True, "edits": {"payment": payment}},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["done"] is True
+    assert result.json()["step"] == "done"
+
+    after = client.get(f"{BASE}/{sid}/summary").json()
+    assert after["steps"]["payment"]["parsed"]["payment"] == payment
+    assert after["steps"]["payment"]["needs_check"] == []
+    assert after["steps"]["payment"]["transcript"] == before["steps"]["payment"]["transcript"]
+    for step in ai.STEPS:
+        if step != "payment":
+            assert after["steps"][step] == before["steps"][step]
+    for lang in ("en", "zh"):
+        assert after[f"preview_{lang}"]["payment"] == payment
+
+    assert_error(client.post(f"{BASE}/{sid}/confirm", json={"step": "payment", "accepted": False}), 409, "STEP_MISMATCH")
+    store_id = client.post(f"{BASE}/{sid}/publish").json()["store_id"]
+    detail = client.get(f"/api/v1/stores/{store_id}?lang=ko").json()
+    assert detail["payment"] == payment
