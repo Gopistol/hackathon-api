@@ -126,15 +126,16 @@ def seed() -> None:
                 save_translations(db, "menu", menu.id, {lang: glossary_translate(menu.name_ko, lang) for lang in ("en", "zh")})
             stores.append((store, s))
 
-        showcase = showcase_keys()
-        if showcase:
-            # 발표용 영상이 있으면 그것만 넣는다. 피드는 최신순이라 거꾸로 넣어 STORES 순서대로 보이게 한다.
+        found = showcase_keys()
+        known = {s["key"] for s in seed_data.STORES}
+        if unknown := found - known:
+            logger.warning("demo/showcase 에 가게 key 와 맞지 않는 영상이 있어 건너뜁니다: %s", sorted(unknown))
+        # 파일 이름이 틀려 맞는 영상이 하나도 없으면 임시 영상을 그대로 쓴다 (피드가 비지 않게).
+        if showcase := found & known:
+            # 발표용 영상만 넣는다. 피드는 최신순이라 거꾸로 넣어 STORES 순서대로 보이게 한다.
             for store, s in reversed(stores):
                 if s["key"] in showcase:
                     _seed_showcase(db, store, s["key"], media)
-            unknown = showcase - {s["key"] for s in seed_data.STORES}
-            if unknown:
-                logger.warning("demo/showcase 에 가게 key 와 맞지 않는 영상이 있어 건너뜁니다: %s", sorted(unknown))
         else:
             for store, s in stores:
                 _seed_video(db, store, s, media)
