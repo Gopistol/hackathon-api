@@ -107,42 +107,32 @@ GLOSSARY: dict[str, dict] = {
         "en": ("Dakgangjeong (Sweet Crispy Chicken)", "Fried chicken bites glazed in sweet sauce.", "Great to take away."),
         "zh": ("韩式甜炸鸡", "裹甜酱的炸鸡块。", "适合外带。"),
     },
-    # 작품에만 나오는 음식 (P1 K-콘텐츠 표시용)
-    "라면": {
-        "spicy": 2,
-        "en": ("Ramyeon (Korean Instant Noodles)", "Spicy Korean instant noodles.", ""),
-        "zh": ("韩式拉面", "辣味韩式方便面。", ""),
-    },
-    "국밥": {
+    "순대국밥": {
         "spicy": 0,
-        "en": ("Gukbap (Rice Soup)", "Hearty soup served with rice.", ""),
-        "zh": ("汤饭", "配米饭的浓汤。", ""),
+        "en": ("Sundae Gukbap (Sausage Rice Soup)", "Hot pork broth with Korean sausage, served with rice.", "Add salted shrimp or chili paste to taste."),
+        "zh": ("血肠汤饭", "猪骨汤配韩式血肠和米饭。", "可按口味加虾酱或辣酱。"),
     },
     "비빔밥": {
         "spicy": 1,
-        "en": ("Bibimbap (Mixed Rice)", "Rice topped with vegetables and gochujang, mixed before eating.", "Mix everything well before eating."),
-        "zh": ("拌饭", "米饭配蔬菜和辣椒酱，拌匀后吃。", "吃之前拌匀。"),
+        "en": ("Bibimbap (Mixed Rice)", "Rice topped with seasoned vegetables and gochujang.", "Mix everything well before eating."),
+        "zh": ("拌饭", "米饭配调味蔬菜和辣椒酱。", "吃之前拌匀。"),
     },
-    "나물": {
+    "나물반찬": {
         "spicy": 0,
-        "en": ("Namul (Seasoned Vegetables)", "Seasoned vegetable side dishes.", ""),
-        "zh": ("凉拌野菜", "调味的蔬菜小菜。", ""),
+        "en": ("Namul (Seasoned Vegetables)", "Assorted seasonal vegetable side dishes.", "Eat with rice or add to bibimbap."),
+        "zh": ("凉拌野菜", "时令蔬菜拌的小菜。", "配米饭或加进拌饭里吃。"),
     },
-    "한우": {
-        "spicy": 0,
-        "en": ("Hanwoo (Korean Beef)", "Premium Korean native beef.", ""),
-        "zh": ("韩牛", "韩国本土优质牛肉。", ""),
-    },
-    "짜파구리": {
-        "spicy": 0,
-        "en": ("Jjapaguri (Ram-don)", "Black bean noodles mixed with spicy ramen.", ""),
-        "zh": ("炸酱拉面", "炸酱面和辣拉面混在一起的面。", ""),
-    },
-    "달고나": {
-        "spicy": 0,
-        "en": ("Dalgona (Honeycomb Toffee)", "Crunchy candy made of melted sugar and baking soda.", ""),
-        "zh": ("椪糖", "用白糖和小苏打做的脆糖。", ""),
-    },
+}
+
+# 작품에만 나오는 음식의 표시 이름 (P1). 메뉴 매칭·맵기에는 쓰지 않는다
+# ("짜장라면"이 라면으로, "콩나물국밥"이 나물로 잡히지 않게).
+CONTENT_FOODS: dict[str, dict[str, str]] = {
+    "라면": {"en": "Ramyeon (Korean Instant Noodles)", "zh": "韩式拉面"},
+    "국밥": {"en": "Gukbap (Rice Soup)", "zh": "汤饭"},
+    "나물": {"en": "Namul (Seasoned Vegetables)", "zh": "凉拌野菜"},
+    "한우": {"en": "Hanwoo (Korean Beef)", "zh": "韩牛"},
+    "짜파구리": {"en": "Jjapaguri (Ram-don)", "zh": "炸酱拉面"},
+    "달고나": {"en": "Dalgona (Honeycomb Toffee)", "zh": "椪糖"},
 }
 
 # 작품 음식 → 시장에 없을 때 비슷한 음식 (P1)
@@ -150,8 +140,6 @@ SIMILAR_FOODS: dict[str, list[str]] = {
     "짜파구리": ["라볶이", "떡볶이"],
     "라면": ["라볶이", "떡볶이"],
     "국밥": ["순대"],
-    "비빔밥": ["김밥"],
-    "나물": ["김밥"],
     "달고나": ["꽈배기", "호떡"],
     "치킨": ["닭강정"],
     "전": ["빈대떡"],
@@ -181,7 +169,11 @@ def glossary_translate(name_ko: str, lang: str) -> dict:
 
 
 def food_name(name_ko: str, lang: str) -> str:
-    return name_ko if lang == "ko" else glossary_translate(name_ko, lang)["name"]
+    if lang == "ko":
+        return name_ko
+    if name_ko in CONTENT_FOODS:
+        return CONTENT_FOODS[name_ko].get(lang, name_ko)
+    return glossary_translate(name_ko, lang)["name"]
 
 
 def load_translations(db: Session, target: str, ids: list[int], lang: str) -> dict[int, Translation]:

@@ -72,7 +72,7 @@ def test_showcase_video_is_seeded_into_feed(client, tmp_path, monkeypatch) -> No
         db.commit()
 
     item = client.get("/api/v1/feed").json()["items"][0]
-    assert item["video_url"] == "/media/videos/showcase-yeongcheon-oil.mp4"
+    assert item["video_url"].split("?")[0] == "/media/videos/showcase-yeongcheon-oil.mp4"
     assert item["duration"] == 15.0  # ffmpeg 로 읽은 길이
     assert item["thumbnail_url"] and client.get(item["thumbnail_url"]).status_code == 200  # 자동 추출
     assert set(item["subtitles"]) == {"en"}

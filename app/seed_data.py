@@ -122,6 +122,24 @@ STORES = [
             "zh": ["石磨绿豆煎饼", "酥脆绿豆煎饼 ₩6,000", "下雨天更好吃"],
         },
     },
+    {
+        "key": "yeongcheon-bibimbap",
+        "market": YEONGCHEON,
+        "name": "영천 나물 비빔밥",
+        "menus": [("비빔밥", 7000), ("순대국밥", 8000), ("나물 반찬", 3000)],
+        "payment": ["cash", "card", "onnuri"],
+        "hours": "매일 08:00-20:00",
+        "story_ko": "매일 아침 시장에서 산 제철 나물로 비빔밥을 만들어요. 따뜻한 순대국밥도 함께 팔아요.",
+        "i18n": {
+            "en": ("Yeongcheon Namul Bibimbap", "Every morning we make bibimbap with seasonal greens bought right here in the market. We also serve hot sundae gukbap."),
+            "zh": ("灵泉野菜拌饭", "每天早上用市场里买的时令野菜做拌饭，也卖热腾腾的血肠汤饭。"),
+        },
+        "script": {
+            "ko": ["시장에서 산 제철 나물", "나물 비빔밥 7,000원", "따뜻한 순대국밥도 있어요", "어서 오세요!"],
+            "en": ["Seasonal greens from the market", "Namul Bibimbap ₩7,000", "Hot sundae gukbap too", "Come visit us!"],
+            "zh": ["市场里的时令野菜", "野菜拌饭 ₩7,000", "也有热血肠汤饭", "欢迎光临！"],
+        },
+    },
 ]
 
 # K-콘텐츠(P1). 이미지는 demo/contents/<key>.jpg (직접 만든 카드 이미지. 포스터·스틸컷은 쓰지 않는다)
@@ -148,7 +166,7 @@ CONTENTS = [
         "i18n": {"en": "Culinary Class Wars Season 2", "zh": "黑白厨师 第二季"},
         "platform": "Netflix",
         "genre": "Variety",
-        "foods": ["나물", "한우"],
+        "foods": ["나물"],  # 한우는 시장 분식 데모와 이어지지 않아 뺐다
     },
     {
         "key": "squid-game",

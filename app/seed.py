@@ -142,9 +142,11 @@ def seed() -> None:
 
         for c in seed_data.CONTENTS:
             image = DEMO / "contents" / f"{c['key']}.jpg"
+            image_path = None
             if image.exists():
                 (media / "contents").mkdir(parents=True, exist_ok=True)
                 shutil.copy2(image, media / "contents" / image.name)
+                image_path = f"contents/{image.name}"
             db.add(
                 Content(
                     title=c["title"],
@@ -152,7 +154,7 @@ def seed() -> None:
                     platform=c["platform"],
                     genre=c["genre"],
                     foods=c["foods"],
-                    image_path=f"contents/{image.name}" if image.exists() else None,
+                    image_path=image_path,
                 )
             )
         db.commit()

@@ -3,13 +3,20 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models import Market, Menu, Store, Video
 from app.services.i18n import load_translations
 from app.services.maps import directions_url
 
 
 def media_url(path: str | None) -> str | None:
-    return f"/media/{path}" if path else None
+    """같은 파일 이름으로 교체해도 브라우저가 옛 파일을 보여주지 않게 수정 시각을 붙인다."""
+    if not path:
+        return None
+    try:
+        return f"/media/{path}?v={int((get_settings().media_path / path).stat().st_mtime)}"
+    except OSError:
+        return f"/media/{path}"
 
 
 def market_name(market: Market, lang: str) -> str:

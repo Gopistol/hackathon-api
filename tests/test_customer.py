@@ -23,7 +23,7 @@ def test_feed_and_media(client) -> None:
     body = client.get("/api/v1/feed?lang=en").json()
     assert len(body["items"]) >= 5
     item = body["items"][0]
-    assert item["video_url"].endswith(".mp4")
+    assert item["video_url"].split("?")[0].endswith(".mp4") and "?v=" in item["video_url"]  # 교체 시 캐시 무효화
     assert set(item["subtitles"]) >= {"en", "zh"}
     assert item["store"]["top_menu"]["price"] > 0
     assert client.get(item["video_url"]).status_code == 200
@@ -86,10 +86,23 @@ def test_contents(client) -> None:
     assert [c["title_ko"] for c in contents] == ["케이팝 데몬 헌터스", "폭군의 셰프", "흑백요리사 시즌 2", "오징어 게임"]
     kdh = contents[0]
     assert kdh["title"] == "KPop Demon Hunters" and kdh["foods_ko"] == ["김밥", "라면", "국밥"]
-    assert kdh["image_url"].endswith(".jpg") and client.get(kdh["image_url"]).status_code == 200
+    assert kdh["image_url"].split("?")[0].endswith(".jpg") and client.get(kdh["image_url"]).status_code == 200
 
     foods = {f["food_ko"]: f for f in client.get(f"/api/v1/contents/{kdh['content_id']}/foods?lang=en").json()["foods"]}
     assert foods["김밥"]["stores"]  # 김밥 파는 시드 가게
     assert not foods["라면"]["stores"] and foods["라면"]["similar"][0]["food_ko"] == "라볶이"
-    assert foods["국밥"]["similar"][0]["food_ko"] == "순대"
+    assert foods["국밥"]["stores"]  # 순대국밥 파는 시드 가게로 바로 연결
     assert foods["라면"]["name"].startswith("Ramyeon")
+
+    by_title = {c["title_ko"]: c["content_id"] for c in contents}
+    for title, food in [("폭군의 셰프", "비빔밥"), ("흑백요리사 시즌 2", "나물")]:
+        f = client.get(f"/api/v1/contents/{by_title[title]}/foods?lang=ko").json()["foods"][0]
+        assert f["food_ko"] == food and f["stores"][0]["name"] == "영천 나물 비빔밥"
+
+
+def test_content_only_foods_do_not_change_menu_translation() -> None:
+    from app.services.i18n import food_name, glossary_entry
+
+    assert glossary_entry("짜장라면") is None  # 작품용 "라면"이 메뉴 맵기·번역에 섞이지 않음
+    assert food_name("라면", "en").startswith("Ramyeon")
+    assert glossary_entry("순대국밥")["en"][0].startswith("Sundae Gukbap")

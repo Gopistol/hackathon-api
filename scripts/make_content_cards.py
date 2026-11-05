@@ -6,6 +6,7 @@
 """
 
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -20,22 +21,29 @@ W, H = 720, 960
 ACCENT = (155, 74, 47)  # #9B4A2F
 DARK = (42, 20, 13)
 CREAM = (250, 240, 228)
-FONT = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
-LATIN = "/System/Library/Fonts/Helvetica.ttc"  # é 같은 라틴 문자용 (한글 폰트에 없음)
+# (한글 폰트, 굵은 글꼴 인덱스). 없으면 한글이 깨지므로 멈춘다.
+KO_FONTS = [
+    ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 6, 0),
+    ("/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf", 0, 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 1, 1),
+]
+LATIN_FONTS = ["/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
 
 
+@lru_cache
 def font(size: int, bold: bool = True):
-    try:
-        return ImageFont.truetype(FONT, size, index=6 if bold else 0)
-    except OSError:
-        return ImageFont.load_default()
+    for path, bold_index, regular_index in KO_FONTS:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size, index=bold_index if bold else regular_index)
+    raise SystemExit("한글 폰트를 찾지 못했습니다. KO_FONTS 에 폰트 경로를 추가하세요 (깨진 이미지를 만들지 않으려고 멈춤).")
 
 
-def latin(size: int):
-    try:
-        return ImageFont.truetype(LATIN, size)
-    except OSError:
-        return font(size, False)
+@lru_cache
+def latin(size: int):  # é 같은 라틴 문자용 (한글 폰트에 없을 수 있음)
+    for path in LATIN_FONTS:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return font(size, False)
 
 
 def wrap(draw, text, f, width):
