@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     root_path: str = ""
     # 콤마로 구분한 프론트 주소
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    # 주소가 바뀌는 무료 호스팅(Vercel 미리보기 등)용 정규식. 예: ^https://[a-z0-9-]+\.vercel\.app$
+    cors_origin_regex: str = ""
 
     database_url: str = "sqlite:///./data/app.db"
     # /media 로 공개되는 파일(영상·썸네일·자막·사진)

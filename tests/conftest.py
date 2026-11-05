@@ -11,6 +11,7 @@ os.environ["MEDIA_DIR"] = f"{_tmp}/media"
 os.environ["AUDIO_DIR"] = f"{_tmp}/audio"
 os.environ["ADMIN_TOKEN"] = "test-admin-token"
 os.environ["GOOGLE_MAPS_API_KEY"] = ""
+os.environ["CORS_ORIGIN_REGEX"] = r"^https://[a-z0-9-]+\.(vercel\.app|netlify\.app)$"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

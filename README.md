@@ -61,6 +61,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | |
 | `OPENAI_MAX_OUTPUT_TOKENS` / `OPENAI_TIMEOUT` | `2048` / `30` | |
 | `CORS_ORIGINS` | localhost:3000,5173 | 프론트 주소 (콤마 구분) |
+| `CORS_ORIGIN_REGEX` | | 프론트 주소 정규식. 서버: `^https://[a-z0-9-]+\.(vercel\.app\|netlify\.app)$` |
 | `DATABASE_URL` | `sqlite:///./data/app.db` | 서버: `sqlite:////opt/hackathon/data/app.db` |
 | `MEDIA_DIR` / `AUDIO_DIR` | `./data/media` / `./data/audio` | 서버: `/opt/hackathon/data/media`, `/opt/hackathon/data/audio` (**절대경로 필수**. 상대경로면 배포 때 지워짐) |
 | `ADMIN_TOKEN` | | 리셋 엔드포인트 토큰. 비우면 리셋 꺼짐 |
