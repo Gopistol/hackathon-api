@@ -2,7 +2,6 @@
 
 import json
 import time
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -50,8 +49,7 @@ def start(db: Session, store_id: int | None, market_id: int | None) -> Onboardin
 
 
 def _save_audio(session_id: int, step: str, data: bytes, filename: str) -> str:
-    ext = Path(filename).suffix.lower()[:6] or ".webm"
-    path = get_settings().audio_path / "sessions" / str(session_id) / f"{step}-{int(time.time() * 1000)}{ext}"
+    path = get_settings().audio_path / "sessions" / str(session_id) / f"{step}-{int(time.time() * 1000)}.{ai.audio_ext(data)}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return str(path)

@@ -129,3 +129,23 @@ def test_llm_wrong_price_is_corrected_by_rules(provider, monkeypatch) -> None:
     assert parsed["menus"][0]["price"] == 4000
     assert parsed["menus"][0]["spicy_level"] == 1  # 용어집 값
     assert any("4,000원" in n for n in needs)
+
+
+def test_blob_filename_gets_extension_from_content(client, provider, monkeypatch) -> None:
+    fake = _fake(SimpleNamespace(text="영천 할매 떡볶이예요"))
+    monkeypatch.setattr(provider._client.audio.transcriptions, "create", fake)
+    monkeypatch.setattr(provider._client.responses, "create", _fake(_text('{"name_ko": "영천 할매 떡볶이"}')))
+    sid = client.post("/api/v1/merchant/onboarding/sessions").json()["session_id"]
+    webm = b"\x1aE\xdf\xa3" + b"\x00" * 20
+    r = client.post(f"/api/v1/merchant/onboarding/sessions/{sid}/answers", files={"audio": ("blob", webm, "audio/webm")})
+    assert r.status_code == 200, r.text
+    assert fake.kwargs["file"][0] == "audio.webm"
+    assert r.json()["parsed"]["name_ko"] == "영천 할매 떡볶이"
+
+
+@pytest.mark.parametrize(
+    ("head", "ext"),
+    [(b"\x1aE\xdf\xa3", "webm"), (b"\x00\x00\x00\x20ftypM4A ", "m4a"), (b"OggS", "ogg"), (b"RIFF", "wav"), (b"ID3\x04", "mp3")],
+)
+def test_audio_ext(head, ext) -> None:
+    assert ai.audio_ext(head + b"\x00" * 16) == ext

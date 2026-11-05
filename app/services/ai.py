@@ -41,6 +41,22 @@ def is_mock(llm: LLMProvider) -> bool:
 # ---------- STT ----------
 
 
+def audio_ext(data: bytes) -> str:
+    """파일 내용으로 녹음 형식을 알아낸다. 브라우저는 파일 이름을 확장자 없는 'blob' 으로 보내는 경우가 많고,
+    OpenAI 는 확장자로 형식을 판단한다. Chrome 은 webm, Safari(iOS) 는 mp4 로 녹음한다."""
+    if data[:4] == b"\x1aE\xdf\xa3":
+        return "webm"
+    if data[4:8] == b"ftyp":
+        return "m4a"
+    if data[:4] == b"OggS":
+        return "ogg"
+    if data[:4] == b"RIFF":
+        return "wav"
+    if data[:3] == b"ID3" or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "mp3"
+    return "webm"
+
+
 async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str) -> str:
     if is_mock(llm):
         return MOCK_TRANSCRIPTS[step]
@@ -48,7 +64,8 @@ async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str) -
     if fn is None:
         raise AppError("STT_FAILED", "지금 설정에서는 음성 인식을 쓸 수 없어요. 글로 입력해 주세요.", 503)
     try:
-        text = (await fn(audio, filename)).strip()
+        # 받은 파일 이름 대신 내용에 맞는 확장자를 붙여 보낸다.
+        text = (await fn(audio, f"audio.{audio_ext(audio)}")).strip()
     except LLMError as e:
         raise AppError("STT_FAILED", "음성을 알아듣지 못했어요. 다시 말하거나 글로 입력해 주세요.", 502) from e
     if not text:

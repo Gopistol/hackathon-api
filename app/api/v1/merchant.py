@@ -21,6 +21,7 @@ from app.schemas.merchant import (
     SummaryOut,
 )
 from app.services import onboarding, video
+from app.services.ai import audio_ext
 from app.services.i18n import LANGS
 
 router = APIRouter(prefix="/merchant", tags=["merchant"], responses=ERROR_RESPONSES)
@@ -114,8 +115,7 @@ async def create_video(
         if audio:
             data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일")
             if data:
-                ext = (audio.filename or "").rsplit(".", 1)[-1].lower()[:5] if "." in (audio.filename or "") else "webm"
-                (wd / f"audio.{ext}").write_bytes(data)
+                (wd / f"audio.{audio_ext(data)}").write_bytes(data)
     except AppError:
         db.delete(v)
         db.commit()
