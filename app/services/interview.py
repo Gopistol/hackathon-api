@@ -224,18 +224,6 @@ def _is_echo(transcript: str, last_say: str) -> bool:
     return m.size >= 0.7 * len(a)
 
 
-def _stt_hint(db: Session, iv: Interview) -> str | None:
-    """음성 인식에 넘기는 낱말 힌트: 지금까지 들은 가게 이름·메뉴. 고유명사를 덜 틀린다."""
-    if iv.kind == "register":
-        d = iv.state["draft"]
-        words = [d.get("store_name"), d.get("category"), *(m["name_ko"] for m in d["items"])]
-    else:
-        store = db.get(Store, iv.store_id)
-        words = [store.name, store.market.name, *(m.name_ko for m in store.menus)] if store else []
-    words = [w for w in dict.fromkeys(words) if w]
-    return ", ".join(words)[:200] or None
-
-
 def _save_audio(iv: Interview, data: bytes) -> str:
     path = get_settings().audio_path / "interviews" / str(iv.id) / f"{len(iv.turns)}-{int(time.time() * 1000)}.{ai.audio_ext(data)}"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,7 +247,7 @@ async def turn(
             if ai.is_mock(llm):
                 transcript = MOCK_ANSWERS.get(asking, "네")
             else:
-                transcript = await asyncio.wait_for(ai.transcribe(llm, audio, filename, "story", _stt_hint(db, iv)), STT_BUDGET)
+                transcript = await asyncio.wait_for(ai.transcribe(llm, audio, filename, "story"), STT_BUDGET)
         except TimeoutError:
             logger.warning("인터뷰 음성 인식 시간 초과")
             transcript = ""
@@ -282,7 +270,9 @@ async def turn(
         return out
     iv.state = {**iv.state, "misses": 0}
 
-    iv.turns = [*iv.turns, {"question": iv.state.get("last_say", ""), "transcript": transcript, "audio_path": audio_path}]
+    # alt: 브라우저가 받아 적은 글. 서버 인식과 다르면 LLM 이 둘을 보고 맞는 쪽을 고른다 ("분식집" / "한식집")
+    alt = ai.drop_stt_hallucinations(typed) if audio and typed and _compact(typed) != _compact(transcript) else None
+    iv.turns = [*iv.turns, {"question": iv.state.get("last_say", ""), "transcript": transcript, "audio_path": audio_path, "alt": alt}]
     if _STOP_RE.search(transcript):
         say, finish = "", True
     elif iv.kind == "register":
@@ -403,7 +393,7 @@ _TIME_WORDS = re.compile(r"\d|시|반|요일|휴무|쉬|매일|아침|저녁|점
 
 def _ground(new: dict, old: dict, iv: Interview, transcript: str, needs: list[str]) -> dict:
     """LLM 이 사장님이 하지 않은 말을 채운 경우(환각)를 걸러 낸다. 의심스러운 건 지우거나 확인 목록에 올린다."""
-    said = " ".join(t["transcript"] for t in iv.turns)  # 이번 답 포함
+    said = " ".join(f"{t['transcript']} {t.get('alt') or ''}" for t in iv.turns)  # 이번 답 포함, 브라우저 인식도
     corpus = _compact(said)
     if new["store_name"] != old.get("store_name") and new["store_name"] and not _near(new["store_name"], corpus):
         needs.append("가게 이름 (말씀과 달라요)")
@@ -462,6 +452,7 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
             "asking": asking,
             "history": _history(iv)[:-1],
             "answer": transcript,
+            "answer_alt": iv.turns[-1].get("alt"),
             "extra_asked": extra_asked,
         }
         try:
@@ -622,6 +613,7 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             "asking": asking,
             "history": _history(iv)[:-1],
             "answer": transcript,
+            "answer_alt": iv.turns[-1].get("alt"),
             "turn": len(iv.turns),
         }
         try:

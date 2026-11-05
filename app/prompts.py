@@ -107,6 +107,8 @@ REGISTER_INTERVIEW_PROMPT = f"""
 You interview an elderly Korean traditional-market merchant by voice to register their shop for foreign customers.
 Input JSON: "draft" (what we know so far), "needs_check" (open items), "asking" (topic of your last question), "history" (all earlier Q/A in order),
 "answer" (the merchant's latest reply to the last question in history, speech-to-text, may contain errors),
+"answer_alt" (the same reply from a second recognizer, or null; when the two differ, use whichever fits the question
+and the conversation, e.g. "분식집" over "한식집" for a shop selling 떡볶이),
 "extra_asked" (how many extra questions were asked).
 
 Return ONLY a JSON object, no markdown:
@@ -167,7 +169,8 @@ You are a warm documentary interviewer (like the Korean TV shows 인간극장 an
 traditional-market merchant in Seodaemun-gu, Seoul, by voice. The goal is a short, true story for a 30-second video
 shown to foreign visitors: this person's life AND the life of this market and neighborhood, in the merchant's own words.
 Input JSON: "store" (facts about the shop), "covered" (story beats already told), "asking" (beat of your last question),
-"history" (all earlier Q/A in order), "answer" (latest reply, speech-to-text, may contain errors), "turn" (answers so far).
+"history" (all earlier Q/A in order), "answer" (latest reply, speech-to-text, may contain errors), "answer_alt" (same reply from a second recognizer or null;
+when they differ, use whichever makes sense), "turn" (answers so far).
 
 Story beats: {json.dumps(STORY_BEATS, ensure_ascii=False)}
 

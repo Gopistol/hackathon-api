@@ -28,6 +28,8 @@
   @keyframes blink { 50% { opacity: 0; } }
   pre { white-space: pre-wrap; background: var(--card); border: 1px solid var(--line); padding: 12px; border-radius: 10px; font-size: 14px; }
   .hidden { display: none; }
+  button.big { display: block; width: 100%; font-size: 24px; padding: 18px; margin: 10px 0; border-radius: 16px; }
+  button.big:disabled { opacity: .35; }
 </style>
 </head>
 <body>
@@ -40,6 +42,7 @@
     <button id="stop">그만하기</button>
   </div>
   <div id="status">통화 시작을 눌러 주세요</div>
+  <button id="done" class="primary big" disabled>다 말했어요</button>
   <div id="meter"><div></div></div>
   <div class="row" style="margin-top:12px">
     <input id="text" placeholder="말 대신 글로 답하기" style="flex:1">
@@ -58,7 +61,8 @@
 const API = "/api/v1/merchant";
 const $ = (id) => document.getElementById(id);
 const player = new Audio();
-let ctx, analyser, stream, iv = null, turn = 0, busy = false, stopped = true;
+let ctx, analyser, stream, iv = null, turn = 0, busy = false, stopped = true, doneNow = false;
+const now = () => performance.now();
 let fillers = [], fillerIdx = 0;
 
 // 말이 멈췄다고 보는 시간, 아무 말 없을 때 기다리는 시간, 한 번 답의 최대 길이.
@@ -79,13 +83,16 @@ function captions(onText) {
     const r = new SR(); r.lang = "ko-KR"; r.continuous = true; r.interimResults = true;
     let final = "";
     const cap = { changed: 0, broken: false, stop: () => { try { r.stop(); } catch (e) {} } };
+    let last = "";
     r.onresult = (e) => {
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         if (e.results[i].isFinal) final += e.results[i][0].transcript; else interim += e.results[i][0].transcript;
       }
-      cap.changed = performance.now();
-      onText((final + interim).trim());
+      const text = (final + interim).trim();
+      if (text === last) return;  // Chrome 은 글자가 그대로여도 결과를 계속 보낸다. 바뀔 때만 "말하는 중"
+      last = text; cap.changed = performance.now();
+      onText(text);
     };
     r.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") cap.broken = true; };
     r.start();
@@ -156,10 +163,14 @@ function listen() {
     });
     const silenceNeeded = () => !cap ? NO_CAPTION_MS : MORE_RE.test(live) ? MID_SENTENCE_MS : DONE_RE.test(live) ? END_SILENCE_MS : NO_CAPTION_MS;
     rec.onstop = () => {
+      $("done").disabled = true;
       if (cap) cap.stop();
+      if (doneNow && !spoke && (live || now() - t0 > 600)) spoke = true;  // "다 말했어요"를 눌렀으면 보낸다
       if (!spoke) { if (bubble) bubble.remove(); return resolve(null); }
       resolve({ blob: new Blob(chunks, { type: rec.mimeType }), text: live, bubble });
     };
+    doneNow = false;
+    $("done").disabled = false;
     rec.start();
     (function tick() {
       if (rec.state !== "recording") return;
@@ -174,10 +185,9 @@ function listen() {
       const useCaptions = cap && !cap.broken;
       if (useCaptions) spoke = spoke || !!live;  // 글자가 나와야 말한 것으로 본다
       else if (loudSince && now - loudSince > 250) spoke = true;
-      const quiet = useCaptions
-        ? now - Math.max(cap.changed, t0) > silenceNeeded() + 300 && (now - lastLoud > silenceNeeded() || now - cap.changed > 2500)
-        : now - lastLoud > silenceNeeded();
-      if (stopped || (spoke && quiet) || (!spoke && now - t0 > NO_SPEECH_MS) || now - t0 > MAX_ANSWER_MS) rec.stop();
+      // 받아쓰기가 되면 글자가 멈춘 것만 본다 (소음이 있어도 끝난다)
+      const quiet = useCaptions ? now - cap.changed > silenceNeeded() + 200 : now - lastLoud > silenceNeeded();
+      if (stopped || doneNow || (spoke && quiet) || (!spoke && now - t0 > NO_SPEECH_MS) || now - t0 > MAX_ANSWER_MS) rec.stop();
       else requestAnimationFrame(tick);
     })();
   });
@@ -187,8 +197,12 @@ let pendingBubble = null;
 
 async function handle(out) {
   iv = out.interview_id; turn = out.turn;
-  // 실시간 받아쓰기 말풍선을 서버가 알아들은 글로 바꾼다 (못 알아들었으면 지운다)
-  if (pendingBubble) { if (out.transcript) { pendingBubble.textContent = out.transcript; pendingBubble.className = "me"; } else pendingBubble.remove(); pendingBubble = null; }
+  // 실시간으로 받아 적은 글은 그대로 둔다 (서버 인식과 다르면 AI 가 둘을 같이 보고 판단한다)
+  if (pendingBubble) {
+    if (!out.heard) pendingBubble.remove();
+    else { if (!pendingBubble.textContent) pendingBubble.textContent = out.transcript; pendingBubble.className = "me"; }
+    pendingBubble = null;
+  }
   else if (out.transcript) say("me", out.transcript);
   say("ai", out.say_ko);
   await speak(out.say_ko, (out.audio && (await out.audio)) || out.audio_url);
@@ -268,6 +282,9 @@ $("start").onclick = async () => {
   loadFillers(out.fillers);  // 첫 질문을 듣는 동안 받아 둔다
   await handle(out);
 };
+
+// 시끄러운 곳에서는 자동으로 안 끝날 수 있어 사장님이 직접 끝낸다
+$("done").onclick = () => { doneNow = true; };
 
 $("stop").onclick = async () => {
   if (!iv) return;
