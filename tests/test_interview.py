@@ -69,14 +69,6 @@ def test_story_interview_quotes_are_verbatim_and_make_a_video(client) -> None:
     start = client.post(BASE, json={"kind": "story", "store_id": 1}).json()
     assert "사장님" in start["say_ko"]
     iid = start["interview_id"]
-    # 영상은 인터뷰가 끝나야 만들 수 있다
-    r = client.post(
-        "/api/v1/merchant/stores/1/videos",
-        files=[("photos", ("0.jpg", _jpeg("red"), "image/jpeg"))],
-        data={"interview_id": str(iid)},
-    )
-    assert_error(r, 409, "INTERVIEW_ACTIVE")
-
     out = _talk(client, iid, 10)
     assert out["done"] and set(out["covered"]) == {"origin", "years", "craft", "people", "message"}
 
@@ -141,3 +133,65 @@ def test_exact_span_and_find_span() -> None:
     chars = [(c, i * 0.1, i * 0.1 + 0.1) for i, c in enumerate("어 40년 동안")]
     assert find_span(chars, "40년 동안") == pytest.approx((0.2, 0.8))
     assert find_span(chars, "없는 말") is None
+
+
+def test_video_from_thin_story_still_renders(client) -> None:
+    """이야기가 거의 없고 통화가 끝나지 않았어도 영상 만들기를 누르면 어떻게든 만든다."""
+    iid = client.post(BASE, json={"kind": "story", "store_id": 1}).json()["interview_id"]
+    client.post(f"{BASE}/{iid}/turns", data={"text": "네"})
+    client.post(f"{BASE}/{iid}/turns", data={"text": "그냥 열심히 했죠"})
+    video = _make(client, [("photos", ("0.jpg", _jpeg("blue"), "image/jpeg"))], {"interview_id": str(iid)})
+    detail = client.get(f"{BASE}/{iid}").json()
+    assert detail["status"] == "done" and detail["quotes"] == [{"turn": 1, "text": "그냥 열심히 했죠"}]
+    assert video["script_source"] == "interview"
+
+
+def test_video_from_empty_story_uses_store_info(client) -> None:
+    iid = client.post(BASE, json={"kind": "story", "store_id": 1}).json()["interview_id"]
+    client.post(f"{BASE}/{iid}/turns", data={"text": "네"})
+    video = _make(client, [("photos", ("0.jpg", _jpeg("blue"), "image/jpeg"))], {"interview_id": str(iid)})
+    assert video["script_source"] == "auto"
+
+
+def test_register_drops_values_the_merchant_never_said(client) -> None:
+    iid = client.post(BASE, json={"kind": "register"}).json()["interview_id"]
+    client.post(f"{BASE}/{iid}/turns", data={"text": "영천 떡집이에요"})
+    made_up = {
+        "say": "1985년부터 하셨군요. 결제는 어떻게 받으세요?", "asking": "payment", "finish": False,
+        "updates": {"category": "떡·한과", "items": [{"name_ko": "꿀떡", "price": 3000}, {"name_ko": "약과", "price": 5000}],
+                    "payment": ["card", "foreign_card"], "hours": "매일 09:00-20:00"},
+        "needs_check": [],
+    }  # fmt: skip
+    fake = FakeLLM([made_up])
+    app.dependency_overrides[get_llm] = lambda: fake
+    try:
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "꿀떡 삼천 원이고 카드 돼요"}).json()
+    finally:
+        app.dependency_overrides.pop(get_llm)
+    d = out["draft"]
+    assert [m["name_ko"] for m in d["items"]] == ["꿀떡"] and d["items"][0]["price"] == 3000  # 약과는 말한 적 없다
+    assert d["payment"] == ["card"]  # 해외카드는 말하지 않았다
+    assert d["hours"] is None  # 시간은 말하지 않았다
+    assert "1985" not in out["say_ko"]  # 지어낸 숫자가 든 말은 고정 질문으로 바뀐다
+    needs = client.get(f"{BASE}/{iid}").json()["needs_check"]
+    assert any("해외카드" in n for n in needs)
+
+
+def test_echo_of_ai_voice_and_stt_noise_are_asked_again(client) -> None:
+    start = client.post(BASE, json={"kind": "register"}).json()
+    iid = start["interview_id"]
+    out = client.post(f"{BASE}/{iid}/turns", data={"text": "가게 등록을 도와드릴게요. 가게 이름이 뭐예요?"}).json()
+    assert not out["heard"] and out["turn"] == 0
+    assert client.get(f"{BASE}/{iid}").json()["turns"] == []
+
+
+def test_browser_captions_are_used_when_server_stt_fails(client) -> None:
+    iid = client.post(BASE, json={"kind": "register"}).json()["interview_id"]
+    fake = FakeLLM([{"say": "영천 떡집, 좋아요. 어떤 가게예요?", "asking": "category", "finish": False,
+                     "updates": {"store_name": "영천 떡집"}, "needs_check": []}])  # fmt: skip
+    app.dependency_overrides[get_llm] = lambda: fake  # transcribe 가 없어서 서버 음성 인식은 실패한다
+    try:
+        out = client.post(f"{BASE}/{iid}/turns", files=AUDIO, data={"text": "영천 떡집이에요", "turn": "0"}).json()
+    finally:
+        app.dependency_overrides.pop(get_llm)
+    assert out["heard"] and out["transcript"] == "영천 떡집이에요" and out["draft"]["store_name"] == "영천 떡집"

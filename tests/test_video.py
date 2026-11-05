@@ -207,3 +207,26 @@ def test_missing_column_is_added_to_existing_table(tmp_path) -> None:
     finally:
         session.engine = original
     assert "script_source" in {c["name"] for c in inspect(engine).get_columns("videos")}
+
+
+def test_failed_steps_fall_back_and_video_still_renders(client, monkeypatch) -> None:
+    """더빙이 터지고 첫 렌더링(전환 효과)이 실패해도 가벼운 설정으로 다시 만들어 끝낸다."""
+    from app.services import video as video_service
+
+    async def broken_dub(*args, **kwargs):
+        raise KeyError("voice_id")
+
+    real_render = video_service.render
+
+    async def flaky_render(*args, simple=False, **kwargs):
+        if not simple:
+            raise RuntimeError("ffmpeg 실패")
+        return await real_render(*args, simple=simple, **kwargs)
+
+    monkeypatch.setattr(video_service, "dub", broken_dub)
+    monkeypatch.setattr(video_service, "render", flaky_render)
+    files = [("photos", (f"{i}.jpg", _jpeg(c), "image/jpeg")) for i, c in enumerate(["red", "green"])]
+    files.append(("audio", ("voice.mp3", _tone(6), "audio/mpeg")))
+    video = _make(client, files)
+    assert video["script_source"] == "stt" and video["voice"] == "original"
+    assert set(video["video_urls"]) == {"ko", "en", "zh"}

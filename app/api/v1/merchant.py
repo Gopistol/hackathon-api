@@ -237,12 +237,11 @@ async def create_video(
         iv = interview.get(db, interview_id)
         if iv.kind != "story" or iv.store_id != store_id:
             raise AppError("VALIDATION_ERROR", "이 가게의 이야기 인터뷰가 아니에요.", 422)
-        if iv.status == "active":
-            raise AppError("INTERVIEW_ACTIVE", "이야기 인터뷰를 먼저 끝내 주세요.", 409)
+        if iv.status == "active":  # 통화 중에 영상 만들기를 눌렀으면 거기서 끝낸 것으로 본다
+            interview.finish(db, llm, iv)
         await interview.compose(db, llm, iv)
+        # 이야기가 거의 없으면 quotes 가 비고, 그때는 가게 기본 정보로 영상을 만든다
         quotes = interview.video_quotes(iv)
-        if not quotes:
-            raise AppError("NO_STORY", "인터뷰에서 영상에 쓸 이야기를 찾지 못했어요. 스크립트로 써 주세요.", 409)
     raw_langs = langs or form.getlist("langs[]") or ["en", "zh"]
     langs = [x for x in dict.fromkeys(l.strip() for v in raw_langs for l in str(v).split(",")) if x in LANGS and x != "ko"]
 

@@ -8,6 +8,7 @@ LLM 이 실패하거나 mock 이면 고정 질문 + 규칙 기반 정리로 같�
 """
 
 import asyncio
+import difflib
 import json
 import logging
 import re
@@ -40,7 +41,7 @@ MAX_ASK_PER_BEAT = 2
 TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가 끊긴 느낌이 들지 않게)
 TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
-HISTORY = 6
+HISTORY = 12  # 지난 질문·답을 전부 넘겨 맥락을 잃지 않게 한다 (최대 턴 수 이상)
 QUOTE_CHARS = (40, 170)  # 고른 구간 글자 수 (너무 짧으면 규칙으로, 길면 자른다)
 
 _STOP_RE = re.compile(r"그만\s*(할게|하자|해요|합시다|하고)|그게\s*다(예요|에요|야|입니다)|이제\s*됐|다\s*했어|끝낼게")
@@ -202,6 +203,31 @@ def start(db: Session, llm: LLMProvider, kind: str, store_id: int | None, market
     return out
 
 
+def _compact(text: str) -> str:
+    return re.sub(r"[\s.,!?~·'\"]+", "", text or "")
+
+
+def _is_echo(transcript: str, last_say: str) -> bool:
+    """방금 답이 AI 가 한 말을 길게 그대로 따라 한 것인지. 질문 낱말 몇 개를 쓴 짧은 답("건어물 가게예요")은 아니다."""
+    a, b = _compact(transcript), _compact(last_say)
+    if len(a) < 8 or not b:
+        return False
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return m.size >= 0.7 * len(a)
+
+
+def _stt_hint(db: Session, iv: Interview) -> str | None:
+    """음성 인식에 넘기는 낱말 힌트: 지금까지 들은 가게 이름·메뉴. 고유명사를 덜 틀린다."""
+    if iv.kind == "register":
+        d = iv.state["draft"]
+        words = [d.get("store_name"), d.get("category"), *(m["name_ko"] for m in d["items"])]
+    else:
+        store = db.get(Store, iv.store_id)
+        words = [store.name, store.market.name, *(m.name_ko for m in store.menus)] if store else []
+    words = [w for w in dict.fromkeys(words) if w]
+    return ", ".join(words)[:200] or None
+
+
 def _save_audio(iv: Interview, data: bytes) -> str:
     path = get_settings().audio_path / "interviews" / str(iv.id) / f"{len(iv.turns)}-{int(time.time() * 1000)}.{ai.audio_ext(data)}"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,19 +244,24 @@ async def turn(
         raise AppError("TURN_MISMATCH", f"지금은 {len(iv.turns)}번째 답을 기다리고 있어요.", 409)
     asking = iv.state.get("asking", "")
     audio_path = None
+    typed = " ".join((text or "").split())
     if audio:
         audio_path = _save_audio(iv, audio)
         try:
             if ai.is_mock(llm):
                 transcript = MOCK_ANSWERS.get(asking, "네")
             else:
-                transcript = await ai.transcribe(llm, audio, filename, "story")
+                transcript = await ai.transcribe(llm, audio, filename, "story", _stt_hint(db, iv))
         except AppError as e:
             if e.code != "STT_FAILED":
                 raise
             transcript = ""
+        # 서버 음성 인식이 실패하면 브라우저가 실시간으로 받아 적은 글(text)을 쓴다
+        transcript = transcript or ai.drop_stt_hallucinations(typed)
     else:
-        transcript = " ".join((text or "").split())
+        transcript = typed
+    if _is_echo(transcript, iv.state.get("last_say", "")):
+        transcript = ""  # 스피커로 나간 AI 질문이 마이크로 다시 들어온 것
     if not transcript:
         # 통화가 끊기지 않게 에러 대신 다시 묻는다
         out = _out(iv, llm, f"{REPROMPT} {iv.state.get('last_say', '')}".strip(), heard=False)
@@ -329,6 +360,60 @@ def _rule_update(draft: dict, asking: str, transcript: str) -> dict:
     return d
 
 
+def _near(text: str, corpus: str, ratio: float = 0.6) -> bool:
+    """text 가 사장님이 한 말(corpus, 띄어쓰기 뺀 글)에 있거나 비슷한 부분이 있는지. 음성 인식 오타("떡뽁이")는 허용한다."""
+    c = _compact(text)
+    if not c or c in corpus:
+        return bool(c)
+    n = len(c)
+    return any(difflib.SequenceMatcher(None, c, corpus[i : i + n]).ratio() >= ratio for i in range(max(len(corpus) - n + 1, 1)))
+
+
+_NUMBER_WORDS = re.compile(r"\d|[일이삼사오육칠팔구십백천만]\s*(원|천|만|백)|원|천|만")
+_TIME_WORDS = re.compile(r"\d|시|반|요일|휴무|쉬|매일|아침|저녁|점심|새벽|밤|오전|오후|주말|평일|연중|무휴|열|아홉|여덟|일곱|여섯|다섯")
+
+
+def _ground(new: dict, old: dict, iv: Interview, transcript: str, needs: list[str]) -> dict:
+    """LLM 이 사장님이 하지 않은 말을 채운 경우(환각)를 걸러 낸다. 의심스러운 건 지우거나 확인 목록에 올린다."""
+    said = " ".join(t["transcript"] for t in iv.turns)  # 이번 답 포함
+    corpus = _compact(said)
+    if new["store_name"] != old.get("store_name") and new["store_name"] and not _near(new["store_name"], corpus):
+        needs.append("가게 이름 (말씀과 달라요)")
+        new["store_name"] = old.get("store_name") or ai._RULES["store_name"](transcript)[0]["name_ko"] or None
+    old_items = {_compact(m["name_ko"]): m for m in old.get("items") or []}
+    items = []
+    for m in new["items"]:
+        key, before = _compact(m["name_ko"]), old_items.get(_compact(m["name_ko"]))
+        if not before and key not in corpus:
+            if not _near(m["name_ko"], corpus):
+                logger.info("인터뷰: 사장님이 말하지 않은 상품을 뺍니다")
+                continue
+            needs.append(f"{m['name_ko']} 이름 확인")
+        if m["price"] is not None and (not before or before["price"] != m["price"]) and not _NUMBER_WORDS.search(transcript):
+            m["price"] = before["price"] if before else None  # 이번 답에 숫자가 없는데 가격이 생겼다
+        items.append(m)
+    new["items"] = items
+    yes, _ = ai._payment_sets(said)
+    for code in [p for p in new["payment"] if p not in (old.get("payment") or []) and p not in yes]:
+        new["payment"].remove(code)
+        needs.append(f"{PAYMENT_KO[code]} 가능 여부")
+    if new["hours"] != old.get("hours") and new["hours"] and not _TIME_WORDS.search(transcript):
+        new["hours"] = old.get("hours")
+        needs.append("영업시간")
+    extras = dict(old.get("extras") or {})
+    for k, v in new["extras"].items():
+        if extras.get(k) == v or any(_compact(w) in corpus for w in re.split(r"[\s,·/]+", v) if len(_compact(w)) >= 2):
+            extras[k] = v
+    new["extras"] = {k: v for k, v in extras.items() if k in new["extras"]}
+    return new
+
+
+def _numbers_ok(say: str, *sources: str) -> bool:
+    """AI 가 할 말에 나온 숫자가 사장님 말이나 정리한 내용에 있는지 (지어낸 연도·가격 막기)."""
+    known = re.sub(r"[,\s]", "", " ".join(sources))
+    return all(n in known for n in re.findall(r"\d+", say.replace(",", "")))
+
+
 def _echo(asking: str, draft: dict) -> str:
     if asking == "store_name" and draft.get("store_name"):
         return f"{draft['store_name']}, 좋아요."
@@ -366,6 +451,10 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
             logger.warning("인터뷰 LLM 실패, 고정 질문으로 이어 갑니다: %s", type(e).__name__)
     if not used_llm:
         new = _rule_update(draft, asking, transcript)
+    else:
+        new = _ground(new, draft, iv, transcript, needs)
+        if say and not _numbers_ok(say, " ".join(t["transcript"] for t in iv.turns), json.dumps(new, ensure_ascii=False)):
+            say = None  # 지어낸 숫자가 들어간 말은 버리고 아래 고정 질문으로
 
     # LLM 이 숫자를 틀리거나 "카드는 안 돼요"를 가능으로 읽는 경우를 막는다 (기존 등록과 같은 검사)
     ai._cross_check_menus(new["items"], transcript, needs)
@@ -501,6 +590,8 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             asking = str(data.get("asking") or "")
             llm_finish = bool(data.get("finish"))
             used_llm = True
+            if say and not _numbers_ok(say, " ".join(t["transcript"] for t in iv.turns), json.dumps(payload["store"], ensure_ascii=False)):
+                say = None
         except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
             logger.warning("이야기 인터뷰 LLM 실패, 고정 질문으로 이어 갑니다: %s", type(e).__name__)
     if not used_llm:
@@ -530,16 +621,37 @@ def _exact_span(transcript: str, quote: str) -> str | None:
     return m.group(0) if m else None
 
 
+_FILLER_ONLY = re.compile(r"^(네|예|응|음+|어+|아+|그렇죠|맞아요|글쎄요|몰라요|없어요)[.!?~\s]*$")
+
+
+def _head(text: str, limit: int) -> str:
+    """앞에서부터 limit 글자 안쪽, 낱말 경계에서 자른 원문 구간."""
+    return text if len(text) <= limit else (text[:limit].rsplit(" ", 1)[0] or text[:limit])
+
+
 def _rule_quotes(turns: list[dict]) -> list[dict]:
-    """LLM 없이: 답마다 첫 문장을 골라 30초 분량까지."""
+    """LLM 없이: 답마다 첫 문장을 골라 30초 분량까지. 이야기가 짧으면 짧은 답이라도 쓴다."""
     quotes, total = [], 0
     for i, t in enumerate(turns):
         sentence = next((s for s in re.split(r"(?<=[.!?。])\s+", t["transcript"]) if len(s) >= 8), "")
-        if not sentence or total + len(sentence) > QUOTE_CHARS[1]:
+        sentence = _head(sentence, QUOTE_CHARS[1] - total)
+        if len(sentence) < 8:
             continue
         quotes.append({"turn": i, "text": sentence})
         total += len(sentence)
-    return quotes
+    if total >= QUOTE_CHARS[0]:
+        return quotes
+    # 이야기가 거의 없을 때: 맞장구만 한 답을 빼고 짧은 답도 그대로 이어 붙인다
+    used = {q["turn"] for q in quotes}
+    for i, t in enumerate(turns):
+        said = t["transcript"].strip()
+        if i in used or len(said) < 2 or _FILLER_ONLY.match(said):
+            continue
+        said = _head(said, QUOTE_CHARS[1] - total)
+        if said:
+            quotes.append({"turn": i, "text": said})
+            total += len(said)
+    return sorted(quotes, key=lambda q: q["turn"])
 
 
 async def compose(db: Session, llm: LLMProvider, iv: Interview) -> dict:

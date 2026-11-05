@@ -86,11 +86,12 @@ class OpenAIProvider:
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
 
-    async def transcribe(self, audio: bytes, filename: str) -> str:
-        """한국어 음성 → 텍스트."""
+    async def transcribe(self, audio: bytes, filename: str, prompt: str | None = None) -> str:
+        """한국어 음성 → 텍스트. prompt 는 가게 이름·메뉴 같은 낱말 힌트 (고유명사를 덜 틀리게)."""
+        extra = {"prompt": prompt} if prompt else {}
         try:
             result = await self._client.audio.transcriptions.create(
-                model=self._stt_model, file=(filename, audio), language="ko"
+                model=self._stt_model, file=(filename, audio), language="ko", **extra
             )
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e

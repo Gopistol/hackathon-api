@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     # 숏폼 더빙: 사장님 녹음으로 목소리를 복제해 외국어로 읽힌다. 키가 없으면 OpenAI 목소리.
     elevenlabs_dub_model: str = "eleven_multilingual_v2"
     # 영상에 넣는 자막 글꼴. 서버(Ubuntu)는 `sudo apt install fonts-noto-cjk` 후 기본값 그대로.
-    # Windows 로컬: SUBTITLE_FONT=Malgun Gothic, SUBTITLE_FONT_ZH=Microsoft YaHei, SUBTITLE_FONTS_DIR=C:/Windows/Fonts
+    # Windows 로컬: SUBTITLE_FONT=Malgun Gothic, SUBTITLE_FONT_ZH=Microsoft YaHei. fonts_dir 는 비워 둔다
+    # (폴더 안 글꼴을 전부 메모리에 올려 렌더링 하나가 1GB 를 넘는다. 꼭 필요하면 쓸 글꼴 파일만 든 폴더로)
     subtitle_font: str = "Noto Sans CJK KR"
     subtitle_font_zh: str = "Noto Sans CJK SC"
     subtitle_fonts_dir: str = ""
