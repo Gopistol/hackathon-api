@@ -129,3 +129,16 @@ def test_patch_rejects_explicit_null_for_required_fields(client) -> None:
     # 생략한 필드는 그대로, address 는 null 허용
     assert client.patch("/api/v1/merchant/stores/2", json={"address": None}).status_code == 200
     assert client.patch(f"/api/v1/merchant/menus/{menu_id}", json={"price": 1500}).status_code == 200
+
+
+def test_store_name_starting_with_particle_like_syllable() -> None:
+    assert ai._rule_store_name("은혜분식이에요")[0]["name_ko"] == "은혜분식"
+    assert ai._rule_store_name("저희 가게는 은혜분식이에요")[0]["name_ko"] == "은혜분식"
+    assert ai._rule_store_name("이름은 포방터 떡볶이요")[0]["name_ko"] == "포방터 떡볶이"
+
+
+def test_hours_keep_minutes() -> None:
+    assert ai._rule_hours("오전 10시 30분부터 오후 8시 30분까지 영업해요") == ({"hours": "10:30-20:30"}, [])
+    assert ai._rule_hours("아침 9시 반부터 저녁 9시까지")[0]["hours"] == "09:30-21:00"
+    # 규칙이 못 읽는 분 표현은 LLM 으로 넘어가도록 확인 요청을 남긴다
+    assert ai._rule_hours("10시 삼십 분부터 9시까지")[1]

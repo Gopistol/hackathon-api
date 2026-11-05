@@ -112,7 +112,9 @@ _N = r"(?:\d+|[일이삼사오육칠팔구])?"
 _PRICE_RE = re.compile(r"(?P<num>\d[\d,]*)\s*원|(?P<ko>(?:%s\s*만)?\s*(?:%s\s*천)?\s*(?:%s\s*백)?)\s*원" % (_N, _N, _N))
 _UNIT_RE = re.compile(r"(\d+|[일이삼사오육칠팔구])?\s*(만|천|백)")
 _HOUR_WORDS = {"열두": 12, "열한": 11, "열": 10, "아홉": 9, "여덟": 8, "일곱": 7, "여섯": 6, "다섯": 5, "네": 4, "세": 3, "두": 2, "한": 1}
-_HOUR_RE = re.compile(r"(아침|오전|낮|오후|저녁|밤)?\s*(\d{1,2}|" + "|".join(_HOUR_WORDS) + r")\s*시")
+_HOUR_RE = re.compile(
+    r"(아침|오전|낮|오후|저녁|밤)?\s*(\d{1,2}|" + "|".join(_HOUR_WORDS) + r")\s*시(?:\s*(\d{1,2})\s*분|\s*(반))?"
+)
 
 
 def _clean(text: str) -> str:
@@ -137,7 +139,12 @@ def _price(m: re.Match) -> int | None:
 
 
 def _rule_store_name(text: str) -> tuple[dict, list[str]]:
-    name = re.sub(r"^((저희|우리|여기)\s*)?(가게\s*)?(이름은|이름이|는|은)\s*", "", _clean(text))
+    # 소개하는 말이 앞에 있을 때만 지운다. "은혜분식"의 "은"처럼 이름 첫 글자를 조사로 보지 않게.
+    name = re.sub(
+        r"^(?:(?:저희|우리|여기)\s*(?:가게\s*)?(?:이름은|이름이|는|은)|가게\s*(?:이름은|이름이|는|은)|이름은|이름이)\s+",
+        "",
+        _clean(text),
+    )
     return {"name_ko": name[:100]}, ([] if name else ["가게 이름"])
 
 
@@ -220,25 +227,28 @@ def _rule_payment(text: str) -> tuple[dict, list[str]]:
 
 
 def _rule_hours(text: str) -> tuple[dict, list[str]]:
-    hours = []
-    for mod, h in _HOUR_RE.findall(text):
+    hours = []  # [(시, 분)]
+    for mod, h, minute, half in _HOUR_RE.findall(text):
         n = int(h) if h.isdigit() else _HOUR_WORDS[h]
         if mod in ("오후", "저녁", "밤") and n < 12:
             n += 12
-        hours.append(n)
+        hours.append((n, int(minute) if minute else 30 if half else 0))
     parts = []
     if "매일" in text or "연중무휴" in text:
         parts.append("매일")
     if len(hours) >= 2:
-        start, end = hours[0], hours[1]
+        (start, sm), (end, em) = hours[0], hours[1]
         if end <= start and end < 12:
             end += 12
-        parts.append(f"{start:02d}:00-{end:02d}:00")
+        parts.append(f"{start:02d}:{sm:02d}-{end:02d}:{em:02d}")
     closed = re.findall(r"([월화수목금토일])요일", text)
     if closed and re.search(r"쉬|휴무|닫", text):
         parts.append(f"{'·'.join(dict.fromkeys(closed))}요일 휴무")
     if len(hours) < 2:
         return {"hours": " ".join(parts) or _clean(text)}, ["영업시간"]
+    # "분"이 있는데 시간 옆에서 못 읽었으면(예: "삼십 분") 놓친 정보가 있다고 보고 확인을 요청한다
+    if text.count("분") > sum(1 for _, _, minute, _ in _HOUR_RE.findall(text) if minute):
+        return {"hours": ", ".join(parts)}, ["영업시간 분 단위"]
     return {"hours": ", ".join(parts)}, []
 
 
