@@ -1,5 +1,6 @@
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,11 @@ os.environ["CORS_ORIGIN_REGEX"] = r"^https://[a-z0-9-]+\.(vercel\.app|netlify\.a
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app import seed  # noqa: E402
 from app.main import app  # noqa: E402
+
+# demo/showcase 에 발표용 영상이 있어도 테스트는 임시 영상 5개로 돈다.
+seed.SHOWCASE = Path(_tmp) / "showcase"
 
 
 @pytest.fixture(scope="session")
