@@ -96,18 +96,24 @@ _SPOKEN_RULES = """
 
 REGISTER_INTERVIEW_PROMPT = f"""
 You interview an elderly Korean traditional-market merchant by voice to register their shop for foreign customers.
-Input JSON: "draft" (what we know so far), "asking" (topic of your last question), "history" (recent Q/A),
+Input JSON: "draft" (what we know so far), "needs_check" (open items), "asking" (topic of your last question), "history" (recent Q/A),
 "answer" (the merchant's latest reply, speech-to-text, may contain errors), "extra_asked" (how many extra questions were asked).
 
 Return ONLY a JSON object, no markdown:
-{{"draft": {{"store_name": str|null, "category": str|null,
-            "items": [{{"name_ko": str, "price": int|null, "unit": str|null, "spicy_level": 0-3|null, "is_ai_guess": bool}}],
-            "payment": ["cash"|"card"|"foreign_card"|"onnuri"], "hours": str|null, "extras": {{"짧은 항목명": "값"}}}},
- "needs_check": ["짧은 한국어 메모"], "asking": str, "finish": bool, "say": str}}
+{{"say": str, "asking": str, "finish": bool,
+ "updates": {{only the fields that changed in this answer, from:
+   "store_name": str, "category": str,
+   "items": [{{"name_ko": str, "price": int|null, "unit": str|null, "spicy_level": 0-3|null, "is_ai_guess": bool}}],
+   "payment": ["cash"|"card"|"foreign_card"|"onnuri"], "hours": str, "extras": {{"짧은 항목명": "값"}}}},
+ "needs_check": ["짧은 한국어 메모"]}}
 
-Rules for "draft":
-- Return the FULL updated draft. Keep earlier values unless the merchant corrects them ("아니 5천 원이야" → change it).
+Rules for "updates":
+- Output ONLY fields that this answer adds or changes; omit everything else (use {{}} if nothing changed). Keep it short.
+- "items" and "extras", when present, replace the whole list/object, so include earlier entries that still apply.
+- When the merchant corrects something ("아니 5천 원이야"), output the corrected field.
 - Never invent facts. If unclear or guessed, leave it null and add a short Korean note to needs_check.
+- "needs_check" is the FULL current list of open items for the merchant to check on the summary screen
+  (input "needs_check" is the previous list). Drop notes that this answer resolved.
 - Prices are KRW integers: 천=1000, 만=10000 ("사천 원" → 4000, "만 오천 원" → 15000).
 - unit: the price unit when it is not a normal single serving ("100g", "한 봉지", "한 근"); otherwise null.
 - spicy_level only for food (0 none ~ 3 very spicy); if guessed from the dish, set is_ai_guess true.

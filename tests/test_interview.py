@@ -25,6 +25,7 @@ def _talk(client, iid: int, n: int) -> dict:
 def test_register_interview_flows_into_existing_publish(client) -> None:
     start = client.post(BASE, json={"kind": "register"}).json()
     assert start["say_ko"] and start["turn"] == 0 and not start["done"]
+    assert [f["text"] for f in start["fillers"]] and all(f["audio_url"] is None for f in start["fillers"])  # mock
     iid = start["interview_id"]
 
     # mock: 지금 묻는 주제에 맞는 고정 답 → 필수 5개를 채우면 끝
@@ -103,14 +104,21 @@ class FakeLLM:
 
 def test_llm_cannot_finish_before_required_fields(client) -> None:
     iid = client.post(BASE, json={"kind": "register"}).json()["interview_id"]
-    early = {"draft": {"store_name": "영천 떡집"}, "needs_check": [], "asking": "none", "finish": True, "say": "고맙습니다"}
-    app.dependency_overrides[get_llm] = lambda: FakeLLM([early])
+    early = {"say": "고맙습니다", "asking": "none", "finish": True, "updates": {"store_name": "영천 떡집"}, "needs_check": []}
+    # LLM 은 바뀐 항목만 보낸다. 나머지는 그대로 남아야 한다
+    fix = {"say": "떡집이군요. 대표 상품이랑 가격을 알려 주세요.", "asking": "items", "finish": False,
+           "updates": {"category": "떡·한과"}, "needs_check": []}  # fmt: skip
+    fake = FakeLLM([early, fix])
+    app.dependency_overrides[get_llm] = lambda: fake
     try:
         out = client.post(f"{BASE}/{iid}/turns", data={"text": "영천 떡집이에요"}).json()
+        assert not out["done"] and out["draft"]["store_name"] == "영천 떡집"
+        assert "어떤 가게" in out["say_ko"]
+        out = client.post(f"{BASE}/{iid}/turns", data={"text": "떡집이에요"}).json()
     finally:
         app.dependency_overrides.pop(get_llm)
-    assert not out["done"] and out["draft"]["store_name"] == "영천 떡집"
-    assert "어떤 가게" in out["say_ko"]
+    assert out["draft"]["store_name"] == "영천 떡집" and out["draft"]["category"] == "떡·한과"
+    assert out["say_ko"].startswith("떡집이군요")
 
 
 def test_compose_drops_quotes_not_in_transcript(client) -> None:

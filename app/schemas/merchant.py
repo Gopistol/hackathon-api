@@ -133,6 +133,10 @@ class InterviewTurnOut(BaseModel):
         description="register 만. {store_name, category, items: [{name_ko, price, unit, spicy_level, is_ai_guess}], payment, hours, extras}"
     )
     covered: list[str] | None = Field(description="story 만. 이야기한 축 origin|years|craft|people|message")
+    fillers: list[dict] | None = Field(
+        None,
+        description="시작할 때만. [{text, audio_url}] 짧은 맞장구. 미리 받아 두고, 사장님 말이 끝나자마자 하나를 틀어 기다림을 메운다",
+    )
     mode: str
 
 

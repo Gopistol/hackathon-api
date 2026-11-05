@@ -48,3 +48,28 @@ def test_question_and_confirm_audio(client) -> None:
 def test_unknown_audio_key(client) -> None:
     assert client.get("/api/v1/merchant/tts/0123456789abcdef0123.mp3").status_code == 404
     assert client.get("/api/v1/merchant/tts/not-a-key.mp3").status_code == 422
+
+
+class StreamingLLM:
+    """만드는 대로 조각을 보내는 프로바이더."""
+
+    name = "openai"
+    calls = 0
+
+    async def speak_stream(self, text: str):
+        StreamingLLM.calls += 1
+        for chunk in (b"ID3", b"part-1", b"part-2"):
+            yield chunk
+
+
+def test_tts_streams_first_then_serves_saved_file(client) -> None:
+    app.dependency_overrides[get_llm] = StreamingLLM
+    try:
+        url = client.post("/api/v1/merchant/interviews", json={"kind": "register"}).json()["audio_url"]
+        first = client.get(url)
+        assert first.status_code == 200 and first.content == b"ID3part-1part-2"
+        again = client.get(url)  # 두 번째는 저장한 파일
+        assert again.content == first.content and "content-length" in again.headers
+        assert StreamingLLM.calls == 1
+    finally:
+        app.dependency_overrides.pop(get_llm, None)

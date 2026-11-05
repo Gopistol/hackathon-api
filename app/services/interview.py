@@ -38,7 +38,7 @@ MAX_TURNS = {"register": 12, "story": 8}
 MIN_STORY_TURNS = 3
 MAX_ASK_PER_BEAT = 2
 TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가 끊긴 느낌이 들지 않게)
-TURN_MAX_TOKENS = 700
+TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
 HISTORY = 6
 QUOTE_CHARS = (40, 170)  # 고른 구간 글자 수 (너무 짧으면 규칙으로, 길면 자른다)
@@ -50,6 +50,8 @@ CLOSING = {
     "story": "귀한 이야기 고맙습니다. 이 이야기로 영상을 만들어 드릴게요.",
 }
 REPROMPT = "잘 못 들었어요. 한 번만 더 말씀해 주세요."
+# 말이 끝나자마자 프론트가 바로 틀어 주는 짧은 맞장구 (다음 질문을 기다리는 동안 조용하지 않게)
+FILLERS = ["네~", "아, 그렇군요.", "음, 네."]
 
 REGISTER_QUESTIONS = {
     "store_name": "안녕하세요! 가게 등록을 도와드릴게요. 가게 이름이 뭐예요?",
@@ -137,7 +139,7 @@ def _out(iv: Interview, llm: LLMProvider, say: str, transcript: str | None = Non
         "transcript": transcript,
         "heard": heard,
         "say_ko": say,
-        "audio_url": tts.prepare(llm, say),
+        "audio_url": tts.audio_url(llm, say),
         "done": iv.status != "active",
         "progress": _progress(iv),
         "draft": iv.state.get("draft") if iv.kind == "register" else None,
@@ -195,6 +197,7 @@ def start(db: Session, llm: LLMProvider, kind: str, store_id: int | None, market
     db.add(iv)
     db.flush()
     out = _out(iv, llm, say)
+    out["fillers"] = [{"text": t, "audio_url": tts.audio_url(llm, t)} for t in FILLERS]
     db.commit()
     return out
 
@@ -340,14 +343,21 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
     needs = list(st.get("needs_check", []))
     say, next_asking, llm_finish, used_llm = None, None, False, False
     if not ai.is_mock(llm):
-        payload = {"draft": draft, "asking": asking, "history": _history(iv)[:-1], "answer": transcript, "extra_asked": extra_asked}
+        payload = {
+            "draft": draft,
+            "needs_check": needs,
+            "asking": asking,
+            "history": _history(iv)[:-1],
+            "answer": transcript,
+            "extra_asked": extra_asked,
+        }
         try:
             data = await asyncio.wait_for(
                 ai.complete_json(llm, REGISTER_INTERVIEW_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
                 TURN_BUDGET,
             )
-            new = _clean_draft(data.get("draft"), draft)
-            needs = list(dict.fromkeys([*needs, *(str(x)[:100] for x in (data.get("needs_check") or []))]))[:15]
+            new = _clean_draft(data.get("updates") or {}, draft)
+            needs = [str(x)[:100] for x in (data.get("needs_check") or [])][:15]  # LLM 이 지금 남은 것만 다시 보낸다
             say = str(data.get("say") or "").strip()[:200] or None
             next_asking = str(data.get("asking") or "")
             llm_finish = bool(data.get("finish"))
@@ -370,8 +380,9 @@ async def _register_step(llm: LLMProvider, iv: Interview, transcript: str) -> tu
     missing = _missing(new)
     finish = False
     if missing:
-        # 필수 항목이 비어 있으면 LLM 이 끝내자고 해도 계속 묻는다
-        if not say or llm_finish or next_asking not in missing:
+        # 필수 항목이 비어 있으면 LLM 이 끝내자고 하거나 업종별 질문으로 넘어가도 필수 항목을 묻는다.
+        # (가격을 되묻는 것처럼 채워진 항목을 다시 묻는 건 LLM 판단을 따른다)
+        if not say or llm_finish or next_asking == "extra":
             next_asking = missing[0]
             say = f"{_echo(asking, new)} {_register_question(next_asking, new)}"
     elif used_llm and not llm_finish and extra_asked < MAX_EXTRA and say:

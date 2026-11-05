@@ -5,7 +5,7 @@ import json
 import shutil
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Path, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -94,18 +94,29 @@ def confirm(
 @router.get(
     "/tts/{key}.mp3",
     response_class=FileResponse,
-    summary="질문·확인 문장 음성 (audio_url 로 받은 주소)",
+    summary="질문·확인 문장 음성 (audio_url 로 받은 주소). 처음엔 만드는 대로 스트리밍, 그 뒤엔 파일",
     responses={200: {"content": {"audio/mpeg": {}}}},
 )
 async def tts_audio(key: str = Path(pattern=r"^[0-9a-f]{20}$"), llm: LLMProvider = Depends(get_llm)):
+    # 같은 주소는 항상 같은 음성이라 브라우저가 오래 저장해도 된다.
+    cache = {"Cache-Control": "public, max-age=86400"}
+    if path := tts.cached(key):
+        return FileResponse(path, media_type="audio/mpeg", headers=cache)
+    text = tts.registered_text(key)
+    if text is None:
+        raise not_found("음성")
+    chunks = tts.speech_chunks(llm, key, text)
     try:
-        path = await tts.audio_file(llm, key)
+        first = await anext(chunks)  # 첫 조각을 받아야 실패를 에러 응답으로 돌려줄 수 있다
     except LLMError as e:
         raise AppError("TTS_FAILED", "음성을 만들지 못했어요. 글자로 보여 드릴게요.", 503) from e
-    if path is None:
-        raise not_found("음성")
-    # 같은 주소는 항상 같은 음성이라 브라우저가 오래 저장해도 된다.
-    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+    async def body():
+        yield first
+        async for chunk in chunks:
+            yield chunk
+
+    return StreamingResponse(body(), media_type="audio/mpeg", headers=cache)
 
 
 @router.get("/onboarding/sessions/{session_id}/summary", response_model=SummaryOut, summary="전체 요약")
