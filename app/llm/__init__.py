@@ -18,7 +18,9 @@ def get_llm() -> LLMProvider:
             if key := s.openai_api_key.get_secret_value():
                 from app.llm.openai_provider import OpenAIProvider
 
-                return OpenAIProvider(key, s.openai_model, s.openai_max_output_tokens, s.openai_timeout)
+                return OpenAIProvider(
+                    key, s.openai_model, s.openai_max_output_tokens, s.openai_timeout, s.openai_stt_model
+                )
         case "anthropic":
             if key := s.anthropic_api_key.get_secret_value():
                 from app.llm.anthropic_provider import AnthropicProvider

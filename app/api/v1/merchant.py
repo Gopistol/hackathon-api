@@ -1,0 +1,168 @@
+"""사장님 API: 음성 대화형 등록, 숏폼 생성, 가게·메뉴 수정(P1)."""
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
+from sqlalchemy.orm import Session
+
+from app.core.errors import ERROR_RESPONSES, AppError, not_found
+from app.db.session import get_db
+from app.llm import LLMProvider, get_llm
+from app.models import Menu, Store, Video
+from app.schemas.merchant import (
+    AnswerOut,
+    ConfirmIn,
+    ConfirmOut,
+    JobCreated,
+    JobStatus,
+    MenuPatch,
+    PublishOut,
+    QuestionOut,
+    SessionStartIn,
+    StorePatch,
+    SummaryOut,
+)
+from app.services import onboarding, video
+from app.services.i18n import LANGS
+
+router = APIRouter(prefix="/merchant", tags=["merchant"], responses=ERROR_RESPONSES)
+
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+
+async def _read_limited(f: UploadFile, limit: int, what: str) -> bytes:
+    data = await f.read()
+    if len(data) > limit:
+        raise AppError("UPLOAD_TOO_LARGE", f"{what}은(는) {limit // 1024 // 1024}MB 이하만 올릴 수 있어요.", 413)
+    return data
+
+
+# ---------- 음성 대화형 등록 ----------
+
+
+@router.post("/onboarding/sessions", response_model=QuestionOut, summary="등록 세션 시작")
+def start_session(body: SessionStartIn | None = None, db: Session = Depends(get_db)):
+    body = body or SessionStartIn()
+    s = onboarding.start(db, body.store_id, body.market_id)
+    return {"session_id": s.id, **onboarding.question(s.step)}
+
+
+@router.post("/onboarding/sessions/{session_id}/answers", response_model=AnswerOut, summary="답변 제출 (음성 또는 텍스트)")
+async def submit_answer(
+    session_id: int,
+    audio: UploadFile | None = File(None, description="webm 등 녹음 파일 (10MB 이하)"),
+    text: str | None = Form(None, max_length=2000, description="음성 대신 글로 답할 때"),
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm),
+):
+    s = onboarding.get_session(db, session_id)
+    data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일") if audio else None
+    if not data and not (text and text.strip()):
+        raise AppError("VALIDATION_ERROR", "audio 또는 text 중 하나를 보내 주세요.", 422)
+    return await onboarding.answer(db, llm, s, data, audio.filename if audio else "", text)
+
+
+@router.post("/onboarding/sessions/{session_id}/confirm", response_model=ConfirmOut, summary="확인 (맞아요/다시)")
+def confirm(session_id: int, body: ConfirmIn, db: Session = Depends(get_db)):
+    s = onboarding.get_session(db, session_id)
+    return onboarding.confirm(db, s, body.step, body.accepted, body.edits)
+
+
+@router.get("/onboarding/sessions/{session_id}/summary", response_model=SummaryOut, summary="전체 요약")
+async def summary(session_id: int, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    return await onboarding.summary(db, llm, onboarding.get_session(db, session_id))
+
+
+@router.post("/onboarding/sessions/{session_id}/publish", response_model=PublishOut, summary="가게 올리기 (번역 생성)")
+async def publish(session_id: int, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    return await onboarding.publish(db, llm, onboarding.get_session(db, session_id))
+
+
+# ---------- 숏폼 생성 ----------
+
+
+@router.post("/stores/{store_id}/videos", status_code=202, response_model=JobCreated, summary="영상 생성 요청")
+async def create_video(
+    store_id: int,
+    request: Request,
+    background: BackgroundTasks,
+    photos: list[UploadFile] = File(None, description="사진 3~5장 (필드 이름 photos 또는 photos[])"),
+    audio: UploadFile | None = File(None, description="짧은 녹음 (선택)"),
+    menu_id: int | None = Form(None),
+    langs: list[str] = Form(None, description="자막 언어. 기본 en, zh (langs 또는 langs[], 콤마 구분도 가능)"),
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm),
+):
+    store = db.get(Store, store_id)
+    if not store:
+        raise not_found("가게")
+    form = await request.form()
+    photos = photos or [f for f in form.getlist("photos[]") if hasattr(f, "read")]
+    if not 3 <= len(photos) <= 5:
+        raise AppError("VALIDATION_ERROR", "사진은 3~5장 올려 주세요.", 422)
+    if menu_id is not None and not any(m.id == menu_id for m in store.menus):
+        raise not_found("메뉴")
+    raw_langs = langs or form.getlist("langs[]") or ["en", "zh"]
+    langs = [x for x in dict.fromkeys(l.strip() for v in raw_langs for l in str(v).split(",")) if x in LANGS and x != "ko"]
+
+    v = Video(store_id=store_id, menu_id=menu_id or (store.menus[0].id if store.menus else None), job_status="queued")
+    db.add(v)
+    db.commit()
+    wd = video.work_dir(v.id)
+    try:
+        for i, f in enumerate(photos):
+            video.prepare_photo(await _read_limited(f, MAX_PHOTO_BYTES, "사진"), wd / f"photo_{i}.jpg")
+        if audio:
+            data = await _read_limited(audio, MAX_AUDIO_BYTES, "녹음 파일")
+            if data:
+                ext = (audio.filename or "").rsplit(".", 1)[-1].lower()[:5] if "." in (audio.filename or "") else "webm"
+                (wd / f"audio.{ext}").write_bytes(data)
+    except AppError:
+        db.delete(v)
+        db.commit()
+        raise
+    background.add_task(video.run_job, v.id, langs or ["en", "zh"], llm)
+    return {"job_id": v.id, "status": v.job_status}
+
+
+@router.get("/videos/jobs/{job_id}", response_model=JobStatus, summary="작업 상태 (2초 간격 폴링)")
+def job_status(job_id: int, db: Session = Depends(get_db)):
+    v = db.get(Video, job_id)
+    if not v:
+        raise not_found("작업")
+    return {
+        "job_id": v.id,
+        "status": v.job_status,
+        "progress": v.progress,
+        "video_id": v.id if v.job_status == "done" else None,
+        "error": v.error,
+    }
+
+
+# ---------- P1: 수정 ----------
+
+
+@router.patch("/stores/{store_id}", response_model=PublishOut, summary="가게 수정 (P1, 번역 재생성)")
+async def patch_store(store_id: int, body: StorePatch, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    store = db.get(Store, store_id)
+    if not store:
+        raise not_found("가게")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(store, field, value)
+    db.commit()
+    await onboarding.retranslate(db, llm, store)
+    return {"store_id": store.id, "status": store.status, "mode": llm.name}
+
+
+@router.patch("/menus/{menu_id}", response_model=PublishOut, summary="메뉴 수정 (P1, 번역 재생성)")
+async def patch_menu(menu_id: int, body: MenuPatch, db: Session = Depends(get_db), llm: LLMProvider = Depends(get_llm)):
+    menu = db.get(Menu, menu_id)
+    if not menu:
+        raise not_found("메뉴")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(menu, field, value)
+    menu.is_ai_guess = False
+    db.commit()
+    store = db.get(Store, menu.store_id)
+    db.refresh(store)
+    await onboarding.retranslate(db, llm, store)
+    return {"store_id": store.id, "status": store.status, "mode": llm.name}

@@ -12,9 +12,9 @@ description: 현재 커밋을 BlueRack 서버에 배포하고 동작을 확인�
 5. 확인:
    ```bash
    curl -fsS https://hack.220-66-233-75.nip.io/health
-   curl -fsS -X POST https://hack.220-66-233-75.nip.io/ask -H 'Content-Type: application/json' -d '{"question":"연결 확인"}'
+   curl -fsS 'https://hack.220-66-233-75.nip.io/api/v1/feed?lang=en' | head -c 300
    ```
-   `/ask` 응답의 `mode`를 보고한다. `mock`이면 서버에 키가 없다는 뜻이다. 실제 호출은 소액이지만 비용이 든다.
+   피드에 시연 영상이 나오는지 보고한다. 서버 LLM 이 mock 인지는 `sudo journalctl -u hackathon -n 50 | grep mock` 으로 확인한다.
 6. 실패하면 `ssh bluerack 'sudo journalctl -u hackathon -n 50 --no-pager'`로 로그를 본다. 로그에 키가 보여도 출력에 옮기지 않는다.
 
 이 앱 영역(`/opt/hackathon`, `/etc/hackathon`, `hackathon` 서비스, Caddy `hack.` 블록) 밖은 건드리지 않는다.

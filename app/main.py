@@ -1,25 +1,36 @@
+import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import chat, files, health, items
+from app import seed
+from app.api import v1
+from app.api.routes import health
 from app.core.config import get_settings
-from app.db.session import init_db
+from app.core.errors import register_error_handlers
+from app.services.video import fail_stuck_jobs
 
+logging.basicConfig(level=logging.INFO)
 settings = get_settings()
-STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+settings.media_path.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
+    seed.seed()  # 비어 있을 때만
+    fail_stuck_jobs()
     yield
 
 
-app = FastAPI(title=settings.app_name, root_path=settings.root_path, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    description="전통시장 AI 숏폼 서비스 API. 계약: 노션 '04. 백엔드·API'. 에러 형식: {\"error\": {\"code\", \"message\"}}",
+    root_path=settings.root_path,
+    lifespan=lifespan,
+)
+register_error_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,12 +41,5 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
-app.include_router(items.router)
-app.include_router(files.router)
-app.include_router(chat.router)
-
-
-@app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    """프론트 준비 전 API 확인·백업 시연용 페이지."""
-    return FileResponse(STATIC_DIR / "index.html")
+app.include_router(v1.router)
+app.mount("/media", StaticFiles(directory=settings.media_path), name="media")

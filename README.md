@@ -1,33 +1,29 @@
-# Hackathon API (FastAPI)
+# 전통시장 AI 숏폼 API (FastAPI)
 
-BlueRack VM 에서 동작하는 해커톤 백엔드. VM 의 인프라(Caddy, 80·443 포트, 메모리)를 다른 서비스와 공유한다.
-`https://hack.220-66-233-75.nip.io` → Caddy → `127.0.0.1:8000`.
+전통시장 사장님이 **말로 가게를 등록**하고 **사진 몇 장**을 올리면, AI가 **다국어 가게 정보**와
+**15초 세로 숏폼(언어별 VTT 자막)**을 만들어 외국인 손님 피드에 올린다. 1차 대상: 서대문구 독립문영천시장·포방터시장.
 
-공식 샘플 레포([halla-ai/hackathon-sample-2026](https://github.com/halla-ai/hackathon-sample-2026))의
-`/ask` 형태와 mock 모드를 따른다. LLM 은 OpenAI API 를 직접 쓴다. `OPENAI_API_KEY` 만 넣으면 실제 호출로 바뀐다.
+- 배포: https://hack.220-66-233-75.nip.io (Swagger `/docs`)
+- API 계약 기준: 노션 **04. 백엔드·API**. 경로·필드를 바꿀 때는 노션도 같이 고친다.
 
 ## 구조
 
 ```
 app/
-├── main.py              # 앱 생성, CORS, 라우터 등록, 시작 시 테이블 생성, / 데모 페이지
-├── core/config.py       # 환경변수 설정 (Settings)
-├── prompts.py           # DEFAULT_SYSTEM_PROMPT (팀 주제에 맞게 수정)
-├── db/session.py        # SQLAlchemy engine, get_db, init_db
-├── models/              # DB 테이블 (item.py 는 예시)
-├── schemas/             # 요청/응답 Pydantic 스키마
-├── api/routes/          # health, items(CRUD 예시), files, chat(/ask, /api/chat)
-├── services/storage.py  # MinIO(S3 호환) 업로드/다운로드
-└── llm/                 # LLM 프로바이더 추상화
-    ├── base.py          #   LLMProvider 인터페이스 (name, complete, stream)
-    ├── openai_provider.py
-    ├── anthropic_provider.py
-    ├── mock_provider.py #   키 없이 개발용 (토큰 0)
-    └── __init__.py      #   get_llm(): LLM_PROVIDER 로 선택, 키 없으면 mock
-static/index.html        # 프론트 준비 전 API 확인·백업 시연용 페이지
-tests/                   # pytest (네트워크 없이 돈다), tests/live/ 는 실제 API 호출
-deploy/                  # systemd 서비스, Caddy 블록, 갱신 스크립트
-demo/                    # 백업 스크린샷·녹화 (제출물)
+├── main.py              # 앱, CORS, 에러 핸들러, /api/v1 라우터, /media 정적 파일, 시작 시 시드
+├── core/config.py       # 환경변수 (Settings)
+├── core/errors.py       # 공통 에러 형식 {"error": {"code", "message"}}
+├── api/v1/customer.py   # 시장·핀, 피드, 가게 상세, 주문 화면, 영상, K-콘텐츠
+├── api/v1/merchant.py   # 음성 등록 세션, 영상 생성 job, 가게·메뉴 수정
+├── api/v1/admin.py      # 데모 리셋
+├── services/ai.py       # STT·단계별 정리·번역·자막 (mock/실패 시 대체 동작 포함)
+├── services/onboarding.py, video.py (ffmpeg), maps.py (Google), i18n.py (언어·음식 용어집), views.py
+├── models/, schemas/
+├── seed.py, seed_data.py  # 멱등 시드·리셋, 시연용 가게 5개·K-콘텐츠 3개
+├── prompts.py           # LLM 프롬프트
+└── llm/                 # LLM 프로바이더 (openai 기본, anthropic, mock)
+demo/                    # 미리 렌더링한 영상(media/), 원본 사진(photos/), markets.csv(있으면)
+scripts/make_demo_media.py  # demo/photos 로 미리 렌더링 영상 다시 만들기
 ```
 
 ## 로컬 실행
@@ -35,97 +31,95 @@ demo/                    # 백업 스크린샷·녹화 (제출물)
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-cp .env.example .env           # 키 없이 두면 mock 모드
-.venv/bin/uvicorn app.main:app --reload
+cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역 전부 고정 응답)
+.venv/bin/uvicorn app.main:app --reload    # http://127.0.0.1:8000/docs
 ```
 
-- 데모 페이지: http://127.0.0.1:8000
-- Swagger: http://127.0.0.1:8000/docs
+처음 시작할 때 DB가 비어 있으면 자동으로 시드한다. ffmpeg 는 PATH 에 없으면 `imageio-ffmpeg` 내장 바이너리를 쓴다.
 
-## OpenAI API 키 설정
+## 시드와 리셋
 
-1. https://platform.openai.com/api-keys 에서 키를 만든다 (결제 수단·크레딧 필요).
-2. `.env` 에 넣는다. `.env` 는 `.gitignore` 에 있어 커밋되지 않는다.
-   ```bash
-   OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4.1-mini      # 선택, 기본값
-   ```
-3. 서버를 재시작한다. 응답의 `mode` 가 `mock` → `openai` 로 바뀌면 연결된 것이다.
-4. 서버(VM)에서는 같은 키를 `/etc/hackathon/hackathon.env` 에 넣고 `sudo systemctl restart hackathon`.
+| 방법 | 명령 |
+|---|---|
+| 비어 있을 때만 시드 | 앱 시작 시 자동, 또는 `.venv/bin/python -m app.seed` |
+| 처음 상태로 되돌리기 (로컬) | `.venv/bin/python -m app.seed --reset` (서버 재시작 필요 없음) |
+| 처음 상태로 되돌리기 (서버, 리허설용) | `curl -X POST https://hack.220-66-233-75.nip.io/api/v1/admin/reset -H "X-Admin-Token: $ADMIN_TOKEN"` |
 
-키는 코드·커밋·프론트에 넣지 않는다. 설정에서는 `SecretStr` 로 다루고, 에러 응답과 로그에는
-에러 종류와 상태 코드만 남긴다 (OpenAI 원본 에러 메시지에는 키 일부가 들어갈 수 있다).
+리셋은 DB 테이블, 생성된 영상·자막, 사장님 음성을 지우고 시드를 다시 넣는다.
 
-| `LLM_PROVIDER` | 필요한 값 | 응답 `mode` |
+- **시장**: `demo/markets.csv`(전국전통시장표준데이터 CSV, [data.go.kr](https://www.data.go.kr/data/15012894/standard.do))가 있으면 서대문구만 넣는다. 없으면 영천·포방터 2곳을 대략 좌표로 넣는다.
+- **시연용 영상**: `demo/media/` 의 미리 렌더링한 영상 5개가 피드에 항상 있다. 실제 사진은
+  `demo/photos/<가게 key>/` 에 3~5장 넣고 `.venv/bin/python scripts/make_demo_media.py` → 커밋 → 배포 → 리셋.
+
+## 환경변수
+
+| 이름 | 기본값 | 설명 |
 |---|---|---|
-| `openai` (기본) | `OPENAI_API_KEY` | `openai` |
-| `anthropic` | `ANTHROPIC_API_KEY` | `anthropic` |
-| `mock` | 없음 | `mock` (답이 `[mock mode]` 로 시작) |
+| `LLM_PROVIDER` | `openai` | `openai` / `anthropic` / `mock`. 키가 비어 있으면 mock |
+| `OPENAI_API_KEY` | | STT·정리·번역·자막 전부 이 키 하나 |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | |
+| `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | |
+| `OPENAI_MAX_OUTPUT_TOKENS` / `OPENAI_TIMEOUT` | `2048` / `30` | |
+| `CORS_ORIGINS` | localhost:3000,5173 | 프론트 주소 (콤마 구분) |
+| `DATABASE_URL` | `sqlite:///./data/app.db` | 서버: `sqlite:////opt/hackathon/data/app.db` |
+| `MEDIA_DIR` / `AUDIO_DIR` | `./data/media` / `./data/audio` | 서버: `/opt/hackathon/data/media`, `/opt/hackathon/data/audio` (**절대경로 필수**. 상대경로면 배포 때 지워짐) |
+| `ADMIN_TOKEN` | | 리셋 엔드포인트 토큰. 비우면 리셋 꺼짐 |
+| `GOOGLE_MAPS_API_KEY` | | (선택) 서버 IP 로 제한한 Geocoding 키. 비우면 가게 좌표 = 시장 좌표 근처 |
+| `FFMPEG_PATH` | | 비우면 PATH → imageio-ffmpeg |
 
-키가 비어 있으면 경고 로그를 남기고 mock 으로 동작한다.
+## API 요약 (`/api/v1`, 언어 `lang=ko|en|zh`, 기본 en)
 
-### 오류 응답
-
-| 상황 | HTTP | 메시지 |
+| 메서드 | 경로 | |
 |---|---|---|
-| 응답 시간 초과 (`OPENAI_TIMEOUT`) | 504 | AI 응답 시간이 초과되었습니다 |
-| 키가 틀림·권한 없음 | 502 | 서버의 OpenAI API 키 설정이 올바르지 않습니다 |
-| 호출 한도 초과 | 429 | AI 호출 한도를 초과했습니다 |
-| 크레딧 부족 (`insufficient_quota`) | 503 | OpenAI 크레딧이 부족합니다 |
-| 모델 이름 오류 등 | 502 | AI 요청이 거부되었습니다 |
-| 네트워크 오류 | 502 | AI 서버에 연결할 수 없습니다 |
+| GET | `/markets`, `/markets/{id}/stores` | 시장 목록, 지도 핀 (`directions_url` = Google Maps 길찾기) |
+| GET | `/feed?cursor=` | 숏폼 피드 (10개씩, `next_cursor`) |
+| GET | `/stores/{id}` | 가게 상세 (다국어 메뉴·먹는 법·맵기) |
+| POST | `/orders/preview` | 주문 화면 (한국어 문장) |
+| GET | `/videos/{id}` | 영상 상세 |
+| POST | `/merchant/onboarding/sessions` | 등록 세션 시작 → 첫 질문 |
+| POST | `/merchant/onboarding/sessions/{id}/answers` | multipart `audio` 또는 `text` |
+| POST | `/merchant/onboarding/sessions/{id}/confirm` | `{step, accepted, edits?}` |
+| GET | `/merchant/onboarding/sessions/{id}/summary` | 단계별 값, `needs_check`, `preview_en` |
+| POST | `/merchant/onboarding/sessions/{id}/publish` | 저장 + 번역 → `{store_id}` |
+| POST | `/merchant/stores/{id}/videos` | multipart `photos`(3~5), `audio`, `menu_id`, `langs` → 202 `{job_id}` |
+| GET | `/merchant/videos/jobs/{job_id}` | `queued/processing/done/failed`, `progress` |
+| PATCH | `/merchant/stores/{id}`, `/merchant/menus/{id}` | 수정 + 번역 재생성 (P1) |
+| GET | `/contents`, `/contents/{id}/foods` | K-콘텐츠 (P1) |
+| POST | `/admin/reset` | 데모 리셋 (`X-Admin-Token`) |
 
-에러 응답 본문은 `{"detail": "..."}`. 스트리밍(`/api/chat/stream`)은 `event: error` 로 같은 메시지를 보낸다.
+- 미디어 URL(`/media/...`)은 상대경로다. 프론트에서 API 주소를 앞에 붙인다.
+- 에러: `{"error": {"code": "STT_FAILED", "message": "..."}}`. 코드: `VALIDATION_ERROR`, `NOT_FOUND`, `STT_FAILED`,
+  `LLM_FAILED`, `UPLOAD_TOO_LARGE`, `INVALID_IMAGE`, `STEP_MISMATCH`, `NO_ANSWER`, `ONBOARDING_INCOMPLETE`, `ONBOARDING_DONE`, `FORBIDDEN`, `INTERNAL_ERROR`
 
-새 프로바이더는 `app/llm/` 에 `name`, `complete()`, `stream()` 을 구현한 클래스를 만들고
-`get_llm()` 의 `match` 에 추가한다. 라우터 코드는 바꿀 필요 없다.
+### AI 실패 시 동작
+
+| 단계 | 실패 시 |
+|---|---|
+| STT | `STT_FAILED` → 다시 말하기 또는 `text` 로 입력 |
+| 단계별 정리 | JSON 파싱 1회 재시도 → 규칙 기반 정리 + `needs_check` 에 확인 요청 |
+| 번역 | 음식 용어집 → 없으면 한국어 원문 |
+| 영상 자막 | 가게 정보로 만든 템플릿 문장 |
+| 영상 렌더링 | job `failed`. 미리 렌더링한 영상은 피드에 남아 있다 |
+
+API 키는 코드·커밋·응답·로그에 넣지 않는다. 프로바이더 원본 에러 메시지는 사용자에게 돌려주지 않는다.
 
 ## 테스트
 
 ```bash
-.venv/bin/pytest               # 네트워크·키 없이 도는 테스트 (OpenAI 호출은 가짜로 대체)
-.venv/bin/pytest -m live       # 실제 OpenAI 호출 (OPENAI_API_KEY 필요, 소액 비용 발생)
+.venv/bin/pytest               # 네트워크·키 없이 (mock 모드, 실제 ffmpeg 렌더링 포함)
+.venv/bin/pytest -m live       # 실제 OpenAI 호출 (비용 발생)
 ```
-
-## API
-
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/health` | `{"status":"ok"}` |
-| POST | `/ask` | `{"question": "...", "system_prompt": null}` → `{"answer", "mode"}` (공식 샘플과 같은 형태) |
-| POST | `/api/chat` | `{"messages":[{"role":"user","content":"..."}], "system": null}` → `{"content", "mode"}` |
-| POST | `/api/chat/stream` | 같은 요청, SSE: `data: {"text"}` 반복 → (실패 시 `event: error`) → `event: done` `{"mode"}` |
-| GET/POST | `/api/items` | 예시 CRUD |
-| GET/DELETE | `/api/items/{id}` | |
-| POST | `/api/files` | multipart 업로드 (10MB 이하) |
-| GET | `/api/files/{key}` | 다운로드 |
-
-`system` 을 비우면 `app/prompts.py` 의 `DEFAULT_SYSTEM_PROMPT` 를 쓴다.
-
-## 새 기능 추가 순서
-
-1. `app/models/` 에 모델 추가 → `app/models/__init__.py` 에 import
-2. `app/schemas/` 에 요청/응답 스키마
-3. `app/api/routes/` 에 라우터 → `app/main.py` 에 `include_router`
-4. LLM 이 필요하면 라우터에서 `llm: LLMProvider = Depends(get_llm)` 로 받아 `await llm.complete(...)`
-5. `tests/` 에 테스트 한 개
-
-테이블은 시작 시 `create_all` 로만 만든다. 컬럼을 바꾸면 SQLite 는 `data/app.db` 를 지우고 다시 띄운다.
-
-## 프론트 연결 (해커톤 당일)
-
-프론트 주소가 정해지면 `CORS_ORIGINS` 에 추가하고 재시작한다.
-서버에서는 `/etc/hackathon/hackathon.env` 를 고친 뒤 `sudo systemctl restart hackathon`.
 
 ## 서버 배포 (BlueRack VM)
 
-배포 완료 (2026-11-03): **https://hack.220-66-233-75.nip.io** (`/health`, `/docs`, `/` 데모 페이지)
+배포 완료 (2026-11-03): **https://hack.220-66-233-75.nip.io** (`/health`, `/docs`)
 
 | 항목 | 위치 |
 |---|---|
 | 코드 | `/opt/hackathon/app` (실행 계정 `hackathon`) |
 | 가상환경 | `/opt/hackathon/venv` |
 | SQLite DB | `/opt/hackathon/data/app.db` (배포해도 유지됨, 자동 백업 없음) |
+| 미디어·음성 | `/opt/hackathon/data/media` (`/media` 로 공개), `/opt/hackathon/data/audio` (비공개) |
 | 환경변수 | `/etc/hackathon/hackathon.env` (root:hackathon 640) |
 | 서비스 | `systemctl status hackathon`, 로그 `sudo journalctl -u hackathon -f` |
 | Caddy | `/etc/caddy/Caddyfile` 끝의 `hack.` 블록, 접근 로그 `/var/log/caddy/hackathon.log` |
@@ -181,7 +175,7 @@ systemctl is-active caddy                              # Caddy 정상 확인
 ## 제출 전 체크리스트 (공식 가이드 기준)
 
 - [ ] `pytest` 통과, `/health` 가 `{"status":"ok"}`
-- [ ] `/ask` 가 범위 안 질문에는 답하고, 범위 밖 질문에는 정중히 거절 (`app/prompts.py`)
+- [ ] 리허설 후 `POST /api/v1/admin/reset` 으로 데모 데이터 초기화
 - [ ] `.env` 가 `git status` 에 안 보이고, 커밋 기록에도 키가 없음
 - [ ] `demo/` 에 백업 스크린샷 또는 90초 녹화
 - [ ] 아래 팀 섹션 작성: 문제·사용자·AI 흐름·데모 흐름, 리스크 5줄, 비용 메모

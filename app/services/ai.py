@@ -1,0 +1,340 @@
+"""STT·LLM 정리·번역·자막. LLM 프로바이더가 mock 이면 전부 고정 응답/규칙 기반으로 동작한다.
+
+외부 호출이 실패해도 데모가 멈추지 않도록 각 함수는 대체 결과를 돌려준다(STT 만 예외).
+"""
+
+import json
+import logging
+import re
+
+from app.core.errors import AppError
+from app.llm import ChatMessage, LLMError, LLMProvider
+from app.prompts import TRANSLATE_PROMPT, VIDEO_SCRIPT_PROMPT, structure_prompt
+from app.services.i18n import PAYMENT_KO, PAYMENTS, glossary_entry, glossary_translate
+
+logger = logging.getLogger(__name__)
+
+STEPS = ["store_name", "menus", "payment", "hours", "story"]
+
+QUESTIONS = {
+    "store_name": ("가게 이름이 뭐예요?", "예: 영천 할매 떡볶이예요"),
+    "menus": ("어떤 메뉴를 얼마에 파세요?", "예: 기름떡볶이 4천 원, 순대 5천 원이요"),
+    "payment": ("어떻게 결제할 수 있어요? 현금, 카드, 해외카드, 온누리상품권 중에 말씀해 주세요.", "예: 현금이랑 카드 다 돼요"),
+    "hours": ("몇 시부터 몇 시까지 하세요? 쉬는 날도 알려 주세요.", "예: 아침 10시부터 밤 9시까지, 월요일은 쉬어요"),
+    "story": ("손님들에게 가게를 어떻게 소개하고 싶으세요?", "예: 40년 동안 기름떡볶이만 만들어 왔어요"),
+}
+
+# mock 모드에서 음성 대신 쓰는 사장님 답변
+MOCK_TRANSCRIPTS = {
+    "store_name": "영천 할매 떡볶이입니다",
+    "menus": "기름떡볶이 4000원, 간장떡볶이 4000원, 순대 5000원이요",
+    "payment": "현금이랑 카드 다 돼요. 온누리상품권도 받아요",
+    "hours": "아침 10시부터 저녁 9시까지 하고 월요일은 쉬어요",
+    "story": "40년 동안 영천시장에서 기름떡볶이만 만들어 왔어요. 외국 손님들도 맛있다고 많이 찾아와요",
+}
+
+
+def is_mock(llm: LLMProvider) -> bool:
+    return llm.name == "mock"
+
+
+# ---------- STT ----------
+
+
+async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str) -> str:
+    if is_mock(llm):
+        return MOCK_TRANSCRIPTS[step]
+    fn = getattr(llm, "transcribe", None)
+    if fn is None:
+        raise AppError("STT_FAILED", "지금 설정에서는 음성 인식을 쓸 수 없어요. 글로 입력해 주세요.", 503)
+    try:
+        text = (await fn(audio, filename)).strip()
+    except LLMError as e:
+        raise AppError("STT_FAILED", "음성을 알아듣지 못했어요. 다시 말하거나 글로 입력해 주세요.", 502) from e
+    if not text:
+        raise AppError("STT_FAILED", "음성이 들리지 않았어요. 다시 말하거나 글로 입력해 주세요.", 422)
+    return text
+
+
+# ---------- JSON 호출 공통 ----------
+
+
+def parse_json(text: str) -> dict:
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("JSON 없음")
+    data = json.loads(text[start : end + 1])
+    if not isinstance(data, dict):
+        raise ValueError("JSON 객체가 아님")
+    return data
+
+
+async def complete_json(llm: LLMProvider, system: str, user: str) -> dict:
+    """JSON 파싱 실패 시 1회 재시도. LLMError 는 그대로 올린다."""
+    for attempt in range(2):
+        text = await llm.complete([ChatMessage(role="user", content=user)], system)
+        try:
+            return parse_json(text)
+        except ValueError:
+            logger.warning("LLM JSON 파싱 실패 (%d회)", attempt + 1)
+    raise ValueError("LLM JSON 파싱 실패")
+
+
+# ---------- 단계별 정리 ----------
+
+_ENDINGS = re.compile(r"\s*(이라고 해요|라고 해요|이에요|예요|입니다|이요|요|임)?[.!~\s]*$")
+_KO_DIGIT = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
+_PRICE_RE = re.compile(r"(\d[\d,]*)\s*(만|천)?\s*원|([일이삼사오육칠팔구]?)\s*(만|천)\s*원")
+_HOUR_WORDS = {"열두": 12, "열한": 11, "열": 10, "아홉": 9, "여덟": 8, "일곱": 7, "여섯": 6, "다섯": 5, "네": 4, "세": 3, "두": 2, "한": 1}
+_HOUR_RE = re.compile(r"(아침|오전|낮|오후|저녁|밤)?\s*(\d{1,2}|" + "|".join(_HOUR_WORDS) + r")\s*시")
+
+
+def _clean(text: str) -> str:
+    return _ENDINGS.sub("", " ".join(text.split()))
+
+
+def _price(m: re.Match) -> int:
+    if m.group(1):
+        n, unit = int(m.group(1).replace(",", "")), m.group(2)
+    else:
+        n, unit = _KO_DIGIT.get(m.group(3), 1), m.group(4)
+    return n * {"만": 10000, "천": 1000}.get(unit or "", 1)
+
+
+def _rule_store_name(text: str) -> tuple[dict, list[str]]:
+    name = re.sub(r"^(저희\s*)?(가게\s*)?(이름은|는|이름이)\s*", "", _clean(text))
+    return {"name_ko": name[:100], "address": None}, ([] if name else ["가게 이름"])
+
+
+def _rule_menus(text: str) -> tuple[dict, list[str]]:
+    menus, needs = [], []
+    for chunk in re.split(r"[,，、/·]|그리고|이랑|하고", text):
+        m = _PRICE_RE.search(chunk)
+        name = chunk[: m.start()] if m else chunk
+        name = re.sub(r"\s*(한|1)\s*(그릇|줄|인분|개|접시|꼬치|봉지)\s*$", "", name.strip())
+        name = re.sub(r"\s*(은|는|가|도|에)\s*$", "", name).strip()  # "이"는 떡볶이처럼 이름 끝일 수 있어 빼지 않는다
+        name = _clean(name)
+        if not re.search(r"[가-힣A-Za-z]", name) or len(name) > 30:
+            continue
+        price = _price(m) if m else None
+        if price is None:
+            needs.append(f"{name} 가격")
+        entry = glossary_entry(name)
+        menus.append({"name_ko": name, "price": price, "spicy_level": entry["spicy"] if entry else 0, "is_ai_guess": True})
+    if not menus:
+        needs.append("메뉴와 가격")
+    return {"menus": menus}, needs
+
+
+def _rule_payment(text: str) -> tuple[dict, list[str]]:
+    payment, needs = [], []
+    foreign = re.search(r"(해외|외국)\s*카드|비자|마스터", text)
+    foreign_no = re.search(r"(해외|외국)\s*카드[^.,]*?(안\s*돼|안\s*됩|못|안\s*받)", text)
+    rest = re.sub(r"(해외|외국)\s*카드", "", text)
+    if "현금" in text:
+        payment.append("cash")
+    if "카드" in rest:
+        payment.append("card")
+    if foreign and not foreign_no:
+        payment.append("foreign_card")
+    if re.search(r"온누리|상품권", text):
+        payment.append("onnuri")
+    if not foreign:
+        needs.append("해외카드 가능 여부")
+    if not payment:
+        needs.append("결제 방법")
+    return {"payment": payment}, needs
+
+
+def _rule_hours(text: str) -> tuple[dict, list[str]]:
+    hours = []
+    for mod, h in _HOUR_RE.findall(text):
+        n = int(h) if h.isdigit() else _HOUR_WORDS[h]
+        if mod in ("오후", "저녁", "밤") and n < 12:
+            n += 12
+        hours.append(n)
+    parts = []
+    if "매일" in text or "연중무휴" in text:
+        parts.append("매일")
+    if len(hours) >= 2:
+        start, end = hours[0], hours[1]
+        if end <= start and end < 12:
+            end += 12
+        parts.append(f"{start:02d}:00-{end:02d}:00")
+    closed = re.findall(r"([월화수목금토일])요일", text)
+    if closed and re.search(r"쉬|휴무|닫", text):
+        parts.append(f"{'·'.join(dict.fromkeys(closed))}요일 휴무")
+    if len(hours) < 2:
+        return {"hours": " ".join(parts) or _clean(text)}, ["영업시간"]
+    return {"hours": ", ".join(parts)}, []
+
+
+def _rule_story(text: str) -> tuple[dict, list[str]]:
+    story = " ".join(text.split())
+    if story and story[-1] not in ".!?":
+        story += "."
+    return {"story_ko": story[:1000]}, ([] if story else ["가게 이야기"])
+
+
+_RULES = {
+    "store_name": _rule_store_name,
+    "menus": _rule_menus,
+    "payment": _rule_payment,
+    "hours": _rule_hours,
+    "story": _rule_story,
+}
+
+
+def normalize(step: str, data: dict) -> dict:
+    """LLM 출력과 사장님 수정값을 같은 형태로 맞춘다. 형식이 틀리면 ValueError/TypeError."""
+    if step == "store_name":
+        address = data.get("address")
+        return {"name_ko": str(data.get("name_ko") or "").strip()[:100], "address": str(address)[:300] if address else None}
+    if step == "menus":
+        menus = []
+        for m in list(data.get("menus") or [])[:30]:
+            name = str(m.get("name_ko") or "").strip()[:100]
+            if not name:
+                continue
+            price = m.get("price")
+            price = int(str(price).replace(",", "")) if price not in (None, "") else None
+            spicy = m.get("spicy_level")
+            if spicy is None:
+                entry = glossary_entry(name)
+                spicy = entry["spicy"] if entry else 0
+            menus.append(
+                {
+                    "name_ko": name,
+                    "price": max(price, 0) if price is not None else None,
+                    "spicy_level": min(max(int(spicy), 0), 3),
+                    "is_ai_guess": bool(m.get("is_ai_guess", False)),
+                }
+            )
+        return {"menus": menus}
+    if step == "payment":
+        return {"payment": [p for p in PAYMENTS if p in (data.get("payment") or [])]}
+    if step == "hours":
+        return {"hours": str(data.get("hours") or "").strip()[:200]}
+    if step == "story":
+        return {"story_ko": str(data.get("story_ko") or "").strip()[:1000]}
+    raise ValueError(step)
+
+
+async def structure_step(llm: LLMProvider, step: str, transcript: str) -> tuple[dict, list[str]]:
+    if is_mock(llm):
+        return _RULES[step](transcript)
+    try:
+        data = await complete_json(llm, structure_prompt(step), transcript)
+        parsed = normalize(step, data)
+        needs = [str(x)[:100] for x in (data.get("needs_check") or [])][:10]
+    except (LLMError, ValueError, TypeError, AttributeError) as e:
+        logger.warning("단계 정리 실패, 규칙 기반으로 대체: %s", type(e).__name__)
+        parsed, needs = _RULES[step](transcript)
+        needs = ["AI 정리에 실패해서 말씀하신 그대로 정리했어요. 확인해 주세요.", *needs]
+    if step == "menus":
+        for m in parsed["menus"]:
+            if m["price"] is None and not any(m["name_ko"] in n for n in needs):
+                needs.append(f"{m['name_ko']} 가격")
+    return parsed, needs
+
+
+def confirm_text(step: str, parsed: dict) -> str:
+    if step == "store_name":
+        return f"가게 이름은 '{parsed['name_ko']}' 맞나요?"
+    if step == "menus":
+        items = [f"{m['name_ko']} {m['price']:,}원" if m["price"] is not None else f"{m['name_ko']}(가격 미정)" for m in parsed["menus"]]
+        return f"메뉴는 {', '.join(items)} 맞나요?" if items else "메뉴를 알아듣지 못했어요. 다시 말씀해 주세요."
+    if step == "payment":
+        methods = [PAYMENT_KO[p] for p in parsed["payment"]]
+        return f"결제는 {', '.join(methods)} 가능, 맞나요?" if methods else "결제 방법을 알아듣지 못했어요. 다시 말씀해 주세요."
+    if step == "hours":
+        return f"영업시간은 '{parsed['hours']}' 맞나요?"
+    return f"가게 소개는 이렇게 보여드릴게요. \"{parsed['story_ko']}\" 괜찮으세요?"
+
+
+# ---------- 번역 ----------
+
+
+def _fallback_translation(name_ko: str, story_ko: str, menus: list[dict], lang: str) -> dict:
+    return {
+        "store": {"name": name_ko, "description": story_ko, "how_to_eat": ""},
+        "menus": {m["id"]: glossary_translate(m["name_ko"], lang) for m in menus},
+    }
+
+
+async def translate_store(
+    llm: LLMProvider, name_ko: str, story_ko: str, menus: list[dict], langs: tuple[str, ...] = ("en", "zh")
+) -> dict[str, dict]:
+    """menus: [{id, name_ko, price, spicy_level}]
+    반환: {lang: {"store": {name, description}, "menus": {id: {name, description, how_to_eat}}}}
+    실패한 항목은 용어집, 그것도 없으면 한국어 원문."""
+    result = {lang: _fallback_translation(name_ko, story_ko, menus, lang) for lang in langs}
+    if is_mock(llm):
+        return result
+    payload = json.dumps({"langs": list(langs), "store": {"name": name_ko, "story": story_ko}, "menus": menus}, ensure_ascii=False)
+    try:
+        data = await complete_json(llm, TRANSLATE_PROMPT, payload)
+    except (LLMError, ValueError) as e:
+        logger.warning("번역 실패, 원문/용어집으로 대체: %s", type(e).__name__)
+        return result
+    for lang in langs:
+        d = data.get(lang)
+        if not isinstance(d, dict):
+            continue
+        store = d.get("store") or {}
+        if isinstance(store, dict):
+            for field in ("name", "description"):
+                if isinstance(store.get(field), str) and store[field].strip():
+                    result[lang]["store"][field] = store[field].strip()
+        for m in d.get("menus") or []:
+            if isinstance(m, dict) and m.get("id") in result[lang]["menus"]:
+                target = result[lang]["menus"][m["id"]]
+                for field in ("name", "description", "how_to_eat"):
+                    if isinstance(m.get(field), str) and m[field].strip():
+                        target[field] = m[field].strip()
+    return result
+
+
+# ---------- 영상 자막 ----------
+
+
+def _first_sentence(text: str, limit: int) -> str:
+    s = re.split(r"(?<=[.!?。！？])\s*", text.strip())[0] if text else ""
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def fallback_script(ctx: dict, langs: list[str]) -> dict[str, list[str]]:
+    """ctx: store_name, market_name, menu_name, price, story, 그리고 언어별 i18n: {lang: {store_name, market_name, menu_name, story}}"""
+    price = ctx.get("price")
+    tails = {"ko": "어서 오세요!", "en": "Come visit us!", "zh": "欢迎光临！"}
+    script = {}
+    for lang in ["ko", *[x for x in langs if x != "ko"]]:
+        t = ctx["i18n"].get(lang, {}) if lang != "ko" else ctx
+        lines = [f"{t.get('store_name') or ctx['store_name']} · {t.get('market_name') or ctx['market_name']}"]
+        if ctx.get("menu_name"):
+            menu = t.get("menu_name") or ctx["menu_name"]
+            lines.append(f"{menu} {price:,}원" if lang == "ko" and price else f"{menu} ₩{price:,}" if price else menu)
+        story = t.get("story") if lang != "ko" else ctx.get("story")
+        if story and (lang == "ko" or story != ctx.get("story")):
+            lines.append(_first_sentence(story, 40 if lang == "en" else 24))
+        lines.append(tails.get(lang, tails["en"]))
+        script[lang] = lines
+    return script
+
+
+async def video_script(llm: LLMProvider, ctx: dict, langs: list[str]) -> dict[str, list[str]]:
+    script = fallback_script(ctx, langs)
+    if is_mock(llm):
+        return script
+    facts = {k: ctx.get(k) for k in ("store_name", "market_name", "menu_name", "price", "story", "transcript")}
+    payload = json.dumps({"langs": ["ko", *langs], "facts": facts}, ensure_ascii=False)
+    try:
+        data = await complete_json(llm, VIDEO_SCRIPT_PROMPT, payload)
+    except (LLMError, ValueError) as e:
+        logger.warning("자막 생성 실패, 템플릿으로 대체: %s", type(e).__name__)
+        return script
+    for lang in script:
+        lines = data.get(lang)
+        if isinstance(lines, list) and 2 <= len(lines) <= 5 and all(isinstance(x, str) and x.strip() for x in lines):
+            script[lang] = [x.strip()[:60] for x in lines]
+    return script

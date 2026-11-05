@@ -35,10 +35,13 @@ def _to_llm_error(e: openai.OpenAIError) -> LLMError:
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self, api_key: str, model: str, max_output_tokens: int, timeout: float) -> None:
+    def __init__(
+        self, api_key: str, model: str, max_output_tokens: int, timeout: float, stt_model: str = "gpt-4o-mini-transcribe"
+    ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=1)
         self._model = model
         self._max_output_tokens = max_output_tokens
+        self._stt_model = stt_model
 
     def _params(self, messages: list[ChatMessage], system: str) -> dict:
         return {
@@ -72,3 +75,13 @@ class OpenAIProvider:
                     raise LLMError("AI 응답 생성 중 오류가 발생했습니다.", 502)
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
+
+    async def transcribe(self, audio: bytes, filename: str) -> str:
+        """한국어 음성 → 텍스트."""
+        try:
+            result = await self._client.audio.transcriptions.create(
+                model=self._stt_model, file=(filename, audio), language="ko"
+            )
+        except openai.OpenAIError as e:
+            raise _to_llm_error(e) from e
+        return result.text

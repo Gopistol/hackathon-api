@@ -9,11 +9,11 @@ description: 해커톤 서비스 기능(API 엔드포인트, DB 테이블, LLM �
 
 1. **DB가 필요하면** `app/models/<이름>.py`에 SQLAlchemy 모델을 만들고 `app/models/__init__.py`에 import한다. `app/models/item.py`를 참고한다.
 2. **스키마**: `app/schemas/<이름>.py`에 요청/응답 Pydantic 모델을 만든다. 입력에는 길이 제한(`Field(min_length=..., max_length=...)`)을 건다.
-3. **라우터**: `app/api/routes/<이름>.py`에 `APIRouter(prefix="/api/<이름>")`를 만들고 `app/main.py`에 `include_router`로 등록한다.
+3. **라우터**: `app/api/v1/<이름>.py`에 `APIRouter`를 만들고 `app/api/v1/__init__.py`에 등록한다 (`/api/v1` 아래).
    - DB: `db: Session = Depends(get_db)`
    - LLM: `llm: LLMProvider = Depends(get_llm)` → `await llm.complete([ChatMessage("user", ...)], system)`
    - LLM 응답에는 `mode=llm.name`을 넣는다.
-   - `LLMError`는 `HTTPException(e.status_code, str(e))`로 바꾼다. `app/api/routes/chat.py` 참고.
+   - 에러는 `AppError(code, message, status)`로 던진다. `LLMError`는 공통 핸들러가 `LLM_FAILED`로 바꾼다. `app/api/v1/merchant.py` 참고.
    - 기능 전용 시스템 프롬프트는 `app/prompts.py`에 상수로 둔다.
 4. **테스트**: `tests/test_<이름>.py`에 정상 케이스 하나와 검증 실패(422) 하나를 만든다. mock 모드라 LLM 답은 `[mock mode]`로 시작한다.
 5. `.venv/bin/pytest`로 전체 테스트를 통과시킨다.
