@@ -5,11 +5,12 @@
 
 import json
 import logging
+import math
 import re
 
 from app.core.errors import AppError
 from app.llm import ChatMessage, LLMError, LLMProvider
-from app.prompts import TRANSLATE_PROMPT, VIDEO_SCRIPT_PROMPT, structure_prompt
+from app.prompts import MERCHANT_SCRIPT_PROMPT, TRANSLATE_PROMPT, VIDEO_SCRIPT_PROMPT, structure_prompt
 from app.services.i18n import PAYMENT_KO, PAYMENTS, glossary_entry, glossary_translate
 
 logger = logging.getLogger(__name__)
@@ -422,3 +423,61 @@ async def video_script(llm: LLMProvider, ctx: dict, langs: list[str]) -> dict[st
         if isinstance(lines, list) and 2 <= len(lines) <= 5 and all(isinstance(x, str) and x.strip() for x in lines):
             script[lang] = [x.strip()[:60] for x in lines]
     return script
+
+
+# ---------- 사장님 스크립트 → 자막 ----------
+
+MAX_SCRIPT_LINES = 6  # 줄당 5초 → 최대 30초
+_LINE_CHARS = 25
+
+
+def _balanced_parts(sentence: str) -> list[str]:
+    """긴 문장을 비슷한 길이로 나눈다. 짧은 꼬리("왔어요.")만 따로 남지 않게 한다."""
+    words, parts = sentence.split(), []
+    count = math.ceil(len(sentence) / _LINE_CHARS)
+    target = len(sentence) / count
+    line = ""
+    for w in words:
+        if line and len(parts) < count - 1 and len(line) + 1 + len(w) > target + 4:
+            parts.append(line)
+            line = w
+        else:
+            line = f"{line} {w}".strip()
+    return [*parts, line] if line else parts
+
+
+def split_script(text: str) -> list[str]:
+    """문장 단위로 나누고 긴 문장은 비슷한 길이로 잘라 자막 줄로 만든다."""
+    lines = []
+    for sentence in re.split(r"(?<=[.!?。！？~])\s+|\n+", text.strip()):
+        sentence = " ".join(sentence.split())
+        if sentence:
+            lines.extend(_balanced_parts(sentence) if len(sentence) > _LINE_CHARS else [sentence])
+    return lines[:MAX_SCRIPT_LINES]
+
+
+def merchant_script_fallback(text: str, langs: list[str]) -> dict[str, list[str]]:
+    """번역이 안 되면 다른 언어 자막도 한국어 원문을 쓴다."""
+    ko = split_script(text) or [text.strip()[:_LINE_CHARS]]
+    return {"ko": ko, **{lang: ko for lang in langs if lang != "ko"}}
+
+
+async def merchant_script(llm: LLMProvider, text: str, langs: list[str]) -> dict[str, list[str]]:
+    script = merchant_script_fallback(text, langs)
+    if is_mock(llm):
+        return script
+    payload = json.dumps({"langs": ["ko", *langs], "script": text[:1500]}, ensure_ascii=False)
+    try:
+        data = await complete_json(llm, MERCHANT_SCRIPT_PROMPT, payload)
+    except (LLMError, ValueError) as e:
+        logger.warning("스크립트 자막 변환 실패, 원문으로 대체: %s", type(e).__name__)
+        return script
+    ko = data.get("ko")
+    if not (isinstance(ko, list) and 1 <= len(ko) <= MAX_SCRIPT_LINES and all(isinstance(x, str) and x.strip() for x in ko)):
+        return script
+    result = {"ko": [x.strip()[:60] for x in ko]}
+    for lang in langs:
+        lines = data.get(lang)
+        ok = isinstance(lines, list) and len(lines) == len(ko) and all(isinstance(x, str) and x.strip() for x in lines)
+        result[lang] = [x.strip()[:80] for x in lines] if ok else result["ko"]
+    return result

@@ -23,7 +23,7 @@ def test_video_job_renders_but_stays_out_of_feed(client) -> None:
     assert job["progress"] == 100 and job["video_id"] == job_id
 
     video = client.get(f"/api/v1/videos/{job_id}").json()
-    assert video["duration"] == 15.0
+    assert video["duration"] == 20.0  # 스크립트 없음 → 가게 정보 자막 4줄 → 20초
     assert client.get(video["video_url"]).headers["content-type"] == "video/mp4"
     assert client.get(video["thumbnail_url"]).status_code == 200
     assert set(video["subtitles"]) == {"ko", "en", "zh"}
@@ -41,8 +41,10 @@ def test_photos_bracket_field_name(client) -> None:
 
 
 def test_video_validation(client) -> None:
-    two = [("photos", (f"{i}.jpg", _jpeg("red"), "image/jpeg")) for i in range(2)]
-    assert_error(client.post("/api/v1/merchant/stores/1/videos", files=two), 422, "VALIDATION_ERROR")
+    six = [("photos", (f"{i}.jpg", _jpeg("red"), "image/jpeg")) for i in range(6)]
+    assert_error(client.post("/api/v1/merchant/stores/1/videos", files=six), 422, "VALIDATION_ERROR")
+    assert_error(client.post("/api/v1/merchant/stores/1/videos", data={"script": "안녕"}), 422, "VALIDATION_ERROR")
+    two = six[:2]
     bad = [("photos", (f"{i}.jpg", b"not an image", "image/jpeg")) for i in range(3)]
     assert_error(client.post("/api/v1/merchant/stores/1/videos", files=bad), 422, "INVALID_IMAGE")
     assert_error(client.post("/api/v1/merchant/stores/9999/videos", files=two), 404, "NOT_FOUND")
@@ -72,3 +74,60 @@ def test_showcase_video_is_seeded_into_feed(client, tmp_path, monkeypatch) -> No
     assert item["duration"] == 15.0  # ffmpeg 로 읽은 길이
     assert item["thumbnail_url"] and client.get(item["thumbnail_url"]).status_code == 200  # 자동 추출
     assert set(item["subtitles"]) == {"en"}
+
+
+def _make(client, files, data=None) -> dict:
+    r = client.post("/api/v1/merchant/stores/1/videos", files=files, data=data or {})
+    assert r.status_code == 202, r.text
+    job = client.get(f"/api/v1/merchant/videos/jobs/{r.json()['job_id']}").json()
+    assert job["status"] == "done", job
+    return client.get(f"/api/v1/videos/{job['video_id']}").json()
+
+
+def _silent(client, video_url: str) -> bool:
+    import subprocess
+    import tempfile
+
+    from app.services.video import ffmpeg_exe
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        f.write(client.get(video_url).content)
+        f.flush()
+        out = subprocess.run([ffmpeg_exe(), "-i", f.name, "-af", "volumedetect", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+    return "max_volume: -91" in out or "max_volume: -inf" in out
+
+
+def test_one_photo_with_script_uses_script_as_subtitles(client) -> None:
+    script = "40년 동안 영천시장에서 기름떡볶이만 만들어 왔어요. 바삭하게 볶아 드려요. 외국 손님도 많이 오세요. 한 번 드셔 보세요!"
+    video = _make(client, [("photos", ("0.jpg", _jpeg("orange"), "image/jpeg"))], {"script": script})
+    assert video["duration"] == 25.0  # 자막 5줄 x 5초
+    ko = client.get(video["subtitles"]["ko"]).text
+    assert "40년 동안 영천시장에서" in ko and "한 번 드셔 보세요!" in ko
+    # mock 모드라 번역 대신 한국어 원문
+    assert "한 번 드셔 보세요!" in client.get(video["subtitles"]["en"]).text
+    assert _silent(client, video["video_url"])
+
+
+def test_recording_becomes_script_but_not_sound(client) -> None:
+    files = [("photos", ("0.jpg", _jpeg("blue"), "image/jpeg")), ("audio", ("blob", b"\x1aE\xdf\xa3" + b"0" * 64, "audio/webm"))]
+    video = _make(client, files)
+    # mock STT 는 고정 문장("40년 동안 영천시장에서...")을 돌려준다
+    assert "40년 동안" in client.get(video["subtitles"]["ko"]).text
+    assert 20.0 <= video["duration"] <= 30.0
+    assert _silent(client, video["video_url"])
+
+
+def test_long_script_caps_at_30_seconds(client) -> None:
+    script = " ".join(f"{i}번째 문장이에요." for i in range(1, 12))
+    video = _make(client, [("photos", (f"{i}.jpg", _jpeg("gray"), "image/jpeg")) for i in range(2)], {"script": script})
+    assert video["duration"] == 30.0
+
+
+def test_plan_segments_splits_long_single_photo() -> None:
+    from app.services.video import plan_segments
+
+    segs = plan_segments(1, 25.0)
+    assert len(segs) == 4 and all(i == 0 for i, _ in segs)
+    assert abs(sum(sec for _, sec in segs) - 25.0) < 1e-6
+    assert plan_segments(5, 20.0) == [(i, 4.0) for i in range(5)]

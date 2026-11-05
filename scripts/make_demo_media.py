@@ -60,7 +60,7 @@ async def main() -> None:
             prepare_photo(f.read_bytes(), work / f"photo_{i}.jpg")
             prepared.append(work / f"photo_{i}.jpg")
         out = DEMO / "media" / "videos" / f"demo-{store['key']}.mp4"
-        await render(prepared, None, out)
+        await render(prepared, out, 15.0)
         make_thumbnail(prepared[0], DEMO / "media" / "thumbs" / f"demo-{store['key']}.jpg")
         print("ok", out.name, out.stat().st_size // 1024, "KB")
 
