@@ -9,7 +9,7 @@ Convert Korean number words to integers in KRW exactly: 천=1000, 이천=2000, �
 """.strip()
 
 STRUCTURE_SCHEMAS = {
-    "store_name": '{"name_ko": "가게 이름", "address": "주소 또는 null", "needs_check": []}',
+    "store_name": '{"name_ko": "가게 이름", "needs_check": []}',
     "menus": (
         '{"menus": [{"name_ko": "메뉴 이름", "price": 4000 or null, "spicy_level": 0-3, "is_ai_guess": true/false}], '
         '"needs_check": []}  # spicy_level: 0 none ~ 3 very spicy. If the merchant did not say it, guess from the dish '
@@ -48,9 +48,9 @@ Rules:
 
 
 VIDEO_SCRIPT_PROMPT = """
-You write subtitles for a 15-second vertical short video of a Korean traditional-market food stall.
+You write subtitles for a 20-30 second vertical short video of a Korean traditional-market food stall.
 Use only the facts given (store, market, menu, price, story, merchant's voice transcript). Do not invent facts.
-Return ONLY JSON: {"ko": ["line1", "line2", "line3"], "en": [...], "zh": [...]} with the same number of lines (3 or 4)
+Return ONLY JSON: {"ko": ["line1", "line2", "line3", "line4", "line5"], "en": [...], "zh": [...]} with the same number of lines (4 to 6)
 in every language. Each line is short (Korean <= 20 chars, English <= 40 chars). zh means Simplified Chinese.
 Include only the requested language codes plus "ko".
 """.strip()

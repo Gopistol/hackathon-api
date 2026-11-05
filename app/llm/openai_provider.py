@@ -49,19 +49,19 @@ class OpenAIProvider:
         self._max_output_tokens = max_output_tokens
         self._stt_model = stt_model
 
-    def _params(self, messages: list[ChatMessage], system: str) -> dict:
+    def _params(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> dict:
         return {
             "model": self._model,
             "instructions": system,
             "input": [{"role": m.role, "content": m.content} for m in messages],
-            "max_output_tokens": self._max_output_tokens,
+            "max_output_tokens": max_tokens or self._max_output_tokens,
             # 대화 기록은 클라이언트가 매번 보내므로 OpenAI 쪽에 저장하지 않는다.
             "store": False,
         }
 
-    async def complete(self, messages: list[ChatMessage], system: str) -> str:
+    async def complete(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> str:
         try:
-            response = await self._client.responses.create(**self._params(messages, system))
+            response = await self._client.responses.create(**self._params(messages, system, max_tokens))
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
         if response.status == "incomplete" and response.incomplete_details:

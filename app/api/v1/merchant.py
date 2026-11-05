@@ -68,9 +68,18 @@ async def submit_answer(
 
 
 @router.post("/onboarding/sessions/{session_id}/confirm", response_model=ConfirmOut, summary="확인 (맞아요/다시)")
-def confirm(session_id: int, body: ConfirmIn, db: Session = Depends(get_db)):
+def confirm(
+    session_id: int,
+    body: ConfirmIn,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm),
+):
     s = onboarding.get_session(db, session_id)
-    return onboarding.confirm(db, s, body.step, body.accepted, body.edits)
+    result = onboarding.confirm(db, s, body.step, body.accepted, body.edits)
+    if result["done"]:
+        background.add_task(onboarding.prefetch_translations, s.id, llm)
+    return result
 
 
 @router.get("/onboarding/sessions/{session_id}/summary", response_model=SummaryOut, summary="전체 요약")

@@ -1,18 +1,22 @@
 """사장님 음성 대화형 등록: store_name → menus → payment → hours → story → done → publish"""
 
 import json
+import logging
 import time
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import AppError, not_found
+from app.db.session import SessionLocal
 from app.llm import LLMProvider
 from app.models import Market, Menu, OnboardingSession, Store
 from app.services import ai
 from app.services.i18n import save_translations
 from app.services.maps import geocode
 from app.seed import offset
+
+logger = logging.getLogger(__name__)
 
 DONE = "done"
 
@@ -124,17 +128,35 @@ def _translation_input(s: OnboardingSession) -> tuple[str, str, list[dict]]:
     return _parsed(s, "store_name").get("name_ko", ""), _parsed(s, "story").get("story_ko", ""), menus
 
 
-async def _translations(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
-    """요약과 올리기에서 같은 번역을 다시 부르지 않도록 세션에 캐시한다."""
-    name, story, menus = _translation_input(s)
-    key = json.dumps([name, story, menus], ensure_ascii=False, sort_keys=True)
+def _cache_key(s: OnboardingSession) -> str:
+    return json.dumps(_translation_input(s), ensure_ascii=False, sort_keys=True)
+
+
+def _cached_translations(s: OnboardingSession) -> dict | None:
     cached = s.answers.get("_translations")
-    if cached and cached.get("key") == key:
-        return cached["data"]
+    return cached["data"] if cached and cached.get("key") == _cache_key(s) else None
+
+
+async def _translations(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
+    """올리기에서 쓰는 번역. 미리 해 둔 번역(prefetch)이 있으면 다시 부르지 않는다."""
+    if (data := _cached_translations(s)) is not None:
+        return data
+    name, story, menus = _translation_input(s)
     data = await ai.translate_store(llm, name, story, menus)
-    s.answers = {**s.answers, "_translations": {"key": key, "data": data}}
+    s.answers = {**s.answers, "_translations": {"key": _cache_key(s), "data": data}}
     db.commit()
     return data
+
+
+async def prefetch_translations(session_id: int, llm: LLMProvider) -> None:
+    """마지막 단계를 확인하면 백그라운드로 번역을 미리 해 둔다. 요약·올리기가 기다리지 않게."""
+    with SessionLocal() as db:
+        s = db.get(OnboardingSession, session_id)
+        if s and not s.published:
+            try:
+                await _translations(db, llm, s)
+            except Exception as e:  # 실패하면 올리기 때 다시 시도한다
+                logger.warning("번역 미리 하기 실패 session=%s: %s", session_id, type(e).__name__)
 
 
 async def summary(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
@@ -146,8 +168,11 @@ async def summary(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
     preview = None
     name, story, menus = _translation_input(s)
     if name:
-        en = (await _translations(db, llm, s))["en"]
+        # 요약은 번역을 기다리지 않는다. 미리 해 둔 번역이 없으면 음식 용어집으로 미리보기를 만든다.
+        cached = _cached_translations(s)
+        en = cached["en"] if cached else ai.fallback_translation(name, story, menus, "en")
         preview = {
+            "translated": cached is not None,  # false 면 잠시 뒤 다시 요약을 부르면 번역본
             "name": en["store"]["name"],
             "story": en["store"]["description"],
             "payment": _parsed(s, "payment").get("payment", []),
@@ -186,7 +211,6 @@ async def publish(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
         store = Store(market_id=market.id, lat=market.lat, lng=market.lng)
         db.add(store)
     store.name = name.get("name_ko") or "이름 없는 가게"
-    store.address = name.get("address")
     store.payment = _parsed(s, "payment").get("payment", [])
     store.hours = _parsed(s, "hours").get("hours", "")
     store.story_ko = _parsed(s, "story").get("story_ko", "")

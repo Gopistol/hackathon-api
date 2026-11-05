@@ -25,7 +25,7 @@ class _JsonLLM:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
 
-    async def complete(self, messages, system):
+    async def complete(self, messages, system, max_tokens=None):
         return json.dumps(self.payload)
 
 

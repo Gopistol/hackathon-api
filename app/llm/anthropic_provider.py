@@ -29,7 +29,8 @@ class AnthropicProvider:
         }
         return params
 
-    async def complete(self, messages: list[ChatMessage], system: str) -> str:
+    async def complete(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> str:
+        # effort(사고)를 쓰므로 짧은 상한은 적용하지 않는다.
         try:
             async with self._client.beta.messages.stream(**self._params(messages, system)) as stream:
                 message = await stream.get_final_message()

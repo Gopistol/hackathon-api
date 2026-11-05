@@ -13,7 +13,7 @@ class MockProvider:
         question = " ".join(messages[-1].content.split())[:160]
         return f"[mock mode] LLM 키가 설정되지 않았습니다.\n\n질문: {question}"
 
-    async def complete(self, messages: list[ChatMessage], system: str) -> str:
+    async def complete(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> str:
         return self._answer(messages)
 
     async def stream(self, messages: list[ChatMessage], system: str) -> AsyncIterator[str]:

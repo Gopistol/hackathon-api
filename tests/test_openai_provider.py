@@ -165,3 +165,47 @@ def test_merchant_script_translation_mismatch_falls_back_to_korean(provider, mon
     monkeypatch.setattr(provider._client.responses, "create", _fake(_text(json.dumps({"en": ["only one"]}))))
     script = asyncio.run(ai.merchant_script(provider, "첫 문장이에요. 둘째 문장이에요.", ["en"]))
     assert script["en"] == script["ko"]
+
+
+def test_rule_steps_skip_llm_and_llm_steps_use_small_token_cap(provider, monkeypatch) -> None:
+    fake = _fake(_text(json.dumps({"payment": ["cash"], "needs_check": []})))
+    monkeypatch.setattr(provider._client.responses, "create", fake)
+    for step, text in [("store_name", "영천 할매 떡볶이에요"), ("story", "40년 됐어요"), ("hours", "아침 10시부터 저녁 9시까지")]:
+        asyncio.run(ai.structure_step(provider, step, text))
+    assert getattr(fake, "calls", 0) == 0  # LLM 안 부름
+    asyncio.run(ai.structure_step(provider, "payment", "현금만 돼요"))
+    assert fake.calls == 1 and fake.kwargs["max_output_tokens"] == ai.STRUCTURE_MAX_TOKENS
+    # 규칙이 시간을 못 알아들은 영업시간만 LLM 으로
+    asyncio.run(ai.structure_step(provider, "hours", "점심 지나서 열고 해 지면 닫아요"))
+    assert fake.calls == 2
+
+
+def test_slow_structuring_falls_back_to_rules(provider, monkeypatch) -> None:
+    async def slow(**kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(provider._client.responses, "create", slow)
+    monkeypatch.setattr(ai, "STRUCTURE_BUDGET", 0.05)
+    parsed, needs = asyncio.run(ai.structure_step(provider, "menus", "순대 5000원"))
+    assert parsed["menus"][0]["price"] == 5000 and "확인" in needs[0]
+
+
+def test_summary_never_waits_for_translation(client, provider, monkeypatch) -> None:
+    fake = _fake(_text(json.dumps({"en": {"store": {"name": "Translated Store"}}})))
+    monkeypatch.setattr(provider._client.responses, "create", fake)
+    base = "/api/v1/merchant/onboarding/sessions"
+    sid = client.post(base).json()["session_id"]
+    client.post(f"{base}/{sid}/answers", data={"text": "테스트 가게예요"})
+    client.post(f"{base}/{sid}/confirm", json={"step": "store_name", "accepted": True})
+    early = client.get(f"{base}/{sid}/summary").json()
+    assert getattr(fake, "calls", 0) == 0 and early["preview_en"]["translated"] is False
+
+    for step, text in [("menus", "순대 5000원"), ("payment", "현금만 돼요"), ("hours", "10시부터 9시까지"), ("story", "맛있어요")]:
+        client.post(f"{base}/{sid}/answers", data={"text": text})
+        client.post(f"{base}/{sid}/confirm", json={"step": step, "accepted": True})
+    # 마지막 확인 직후 백그라운드 번역이 끝나 있다 (TestClient 는 응답 뒤 바로 실행)
+    calls_after_prefetch = fake.calls
+    summary = client.get(f"{base}/{sid}/summary").json()
+    assert summary["preview_en"]["translated"] is True and summary["preview_en"]["name"] == "Translated Store"
+    client.post(f"{base}/{sid}/publish")
+    assert fake.calls == calls_after_prefetch  # 요약·올리기에서 번역을 다시 부르지 않음

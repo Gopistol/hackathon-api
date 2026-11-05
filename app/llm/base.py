@@ -30,7 +30,8 @@ class LLMProvider(Protocol):
     # 응답의 mode 로 내려간다 (UI 에서 mock/openai 구분용)
     name: str
 
-    async def complete(self, messages: list[ChatMessage], system: str) -> str: ...
+    # max_tokens: 이 호출만의 출력 상한 (짧은 JSON 을 빨리 받을 때). None 이면 설정값.
+    async def complete(self, messages: list[ChatMessage], system: str, max_tokens: int | None = None) -> str: ...
 
     def stream(self, messages: list[ChatMessage], system: str) -> AsyncIterator[str]: ...
 
