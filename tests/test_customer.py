@@ -108,3 +108,43 @@ def test_content_only_foods_do_not_change_menu_translation() -> None:
     assert glossary_entry("짜장라면") is None  # 작품용 "라면"이 메뉴 맵기·번역에 섞이지 않음
     assert food_name("라면", "en").startswith("Ramyeon")
     assert glossary_entry("순대국밥")["en"][0].startswith("Sundae Gukbap")
+
+
+def test_seed_menu_and_store_photos(client) -> None:
+    for store_id in range(1, 7):
+        ko = client.get(f"/api/v1/stores/{store_id}?lang=ko").json()
+        en = client.get(f"/api/v1/stores/{store_id}?lang=en").json()
+        assert ko["thumbnail_url"]
+        assert client.get(ko["thumbnail_url"]).status_code == 200
+        assert [m["image_url"] for m in ko["menus"]] == [m["image_url"] for m in en["menus"]]
+        for menu in ko["menus"]:
+            assert menu["image_url"].startswith("/media/foods/")
+            assert "?v=" in menu["image_url"]
+            image = client.get(menu["image_url"])
+            assert image.status_code == 200
+            assert image.headers["content-type"].startswith("image/")
+
+
+def test_market_photos_and_video_less_store(client) -> None:
+    markets = client.get("/api/v1/markets").json()
+    for market in markets:
+        if not market["store_count"]:
+            continue
+        assert market["thumbnail_url"]
+        assert client.get(market["thumbnail_url"]).status_code == 200
+        pins = client.get(f"/api/v1/markets/{market['market_id']}/stores").json()
+        assert pins["market"]["thumbnail_url"] == market["thumbnail_url"]
+        assert all(pin["thumbnail_url"] and pin["top_menu"]["image_url"] for pin in pins["stores"])
+    # 마지막 시드 가게는 테스트용 영상이 없어도 대표 메뉴 사진이 있다.
+    detail = client.get("/api/v1/stores/6").json()
+    assert not detail["videos"]
+    assert "bibimbap.jpg?v=" in detail["thumbnail_url"]
+
+
+def test_menu_photo_does_not_mismatch_unknown_names(client) -> None:
+    from app.services.views import menu_photo
+
+    assert menu_photo("순대국밥").split("?")[0].endswith("gukbap.jpg")
+    assert menu_photo("나물 반찬").split("?")[0].endswith("namul.jpg")
+    assert menu_photo("순대국밥 신메뉴") is None
+    assert menu_photo("없는 메뉴") is None

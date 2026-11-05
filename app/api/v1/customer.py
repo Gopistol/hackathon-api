@@ -27,6 +27,8 @@ from app.services.views import (
     done_videos,
     market_name,
     market_view,
+    market_photo,
+    store_photo,
     media_url,
     menu_view,
     store_card,
@@ -54,7 +56,7 @@ def list_markets(lang: Lang = LangQ, db: Session = Depends(get_db)):
         db.execute(select(Store.market_id, func.count()).where(Store.status == "published").group_by(Store.market_id)).all()
     )
     markets = db.scalars(select(Market).order_by(Market.id))
-    return [market_view(m, lang, counts.get(m.id, 0)) for m in markets]
+    return [market_view(m, lang, counts.get(m.id, 0), market_photo(db, m.id)) for m in markets]
 
 
 @router.get("/markets/{market_id}/stores", response_model=MarketStoresOut, summary="시장 내 가게 핀")
@@ -68,7 +70,6 @@ def market_stores(market_id: int, lang: Lang = LangQ, db: Session = Depends(get_
     pins = []
     for s in stores:
         prices = [m.price for m in s.menus if m.price is not None]
-        videos = done_videos(db, s.id)
         pins.append(
             {
                 "store_id": s.id,
@@ -77,11 +78,11 @@ def market_stores(market_id: int, lang: Lang = LangQ, db: Session = Depends(get_
                 "lng": s.lng,
                 "top_menu": top_menu(db, s, lang),
                 "price_range": {"min": min(prices, default=None), "max": max(prices, default=None)},
-                "thumbnail_url": media_url(videos[0].thumbnail_path) if videos else None,
+                "thumbnail_url": store_photo(db, s),
                 "directions_url": directions_url(s.lat, s.lng),
             }
         )
-    return {"market": market_view(market, lang, len(stores)), "stores": pins}
+    return {"market": market_view(market, lang, len(stores), market_photo(db, market.id)), "stores": pins}
 
 
 @router.get("/feed", response_model=FeedOut, summary="숏폼 피드")
@@ -114,6 +115,7 @@ def store_detail(store_id: int, lang: Lang = LangQ, db: Session = Depends(get_db
         "lang": lang,
         "name": st.name if st and st.name else store.name,
         "name_ko": store.name,
+        "thumbnail_url": store_photo(db, store),
         "market": {"market_id": store.market_id, "name": market_name(store.market, lang)},
         "address": store.address,
         "lat": store.lat,

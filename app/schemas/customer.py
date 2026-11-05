@@ -8,6 +8,7 @@ class TopMenu(BaseModel):
     name: str
     price: int | None
     spicy_level: int
+    image_url: str | None = None
 
 
 class MarketOut(BaseModel):
@@ -22,6 +23,7 @@ class MarketOut(BaseModel):
     has_parking: bool
     vouchers: list[str]
     store_count: int
+    thumbnail_url: str | None = None
 
 
 class PriceRange(BaseModel):
@@ -46,6 +48,7 @@ class MarketStoresOut(BaseModel):
 
 
 class StoreCard(BaseModel):
+    thumbnail_url: str | None = None
     store_id: int
     name: str
     market: str
@@ -80,6 +83,7 @@ class MenuOut(BaseModel):
     name_ko: str
     price: int | None
     spicy_level: int
+    image_url: str | None = None
     description: str
     how_to_eat: str
     is_ai_guess: bool
@@ -98,6 +102,7 @@ class VideoBrief(BaseModel):
 
 
 class StoreDetail(BaseModel):
+    thumbnail_url: str | None = None
     store_id: int
     lang: Lang
     name: str

@@ -53,6 +53,7 @@ class SummaryOut(BaseModel):
     steps: dict
     needs_check: list[str]
     preview_en: dict | None = Field(description="외국인 화면 미리보기 {name, story, payment, hours, menus[]}")
+    preview_zh: dict | None = Field(None, description="중국어 미리보기. preview_en 과 같은 모양 {translated, name, story, payment, hours, menus[]}")
     mode: str
 
 
