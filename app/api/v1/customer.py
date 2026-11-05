@@ -165,7 +165,14 @@ def video_detail(video_id: int, lang: Lang = LangQ, db: Session = Depends(get_db
     if v.menu_id and (m := db.get(Menu, v.menu_id)):
         t = load_translations(db, "menu", [m.id], lang).get(m.id)
         menu = {"menu_id": m.id, "name": t.name if t and t.name else m.name_ko, "price": m.price, "spicy_level": m.spicy_level}
-    return {**video_brief(v), "store_id": v.store_id, "menu": menu, "status": v.job_status}
+    return {
+        **video_brief(v),
+        "store_id": v.store_id,
+        "menu": menu,
+        "status": v.job_status,
+        "script_ko": (v.script or {}).get("ko", []),
+        "script_source": v.script_source,
+    }
 
 
 # ---------- P1: K-콘텐츠 ----------

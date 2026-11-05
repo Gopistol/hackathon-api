@@ -25,7 +25,7 @@ from app.schemas.merchant import (
     SummaryOut,
 )
 from app.services import onboarding, video
-from app.services.ai import audio_ext
+from app.services.ai import MAX_SCRIPT_LINES, audio_ext, split_script
 from app.services.i18n import LANGS
 
 router = APIRouter(prefix="/merchant", tags=["merchant"], responses=ERROR_RESPONSES)
@@ -106,6 +106,10 @@ async def create_video(
     photos = photos or [f for f in form.getlist("photos[]") if hasattr(f, "read")]
     if not 1 <= len(photos) <= 5:
         raise AppError("VALIDATION_ERROR", "사진은 1~5장 올려 주세요.", 422)
+    if script and len(split_script(script, limit=None)) > MAX_SCRIPT_LINES:
+        raise AppError(
+            "SCRIPT_TOO_LONG", f"스크립트가 30초를 넘어요. 자막 {MAX_SCRIPT_LINES}줄(문장 {MAX_SCRIPT_LINES}개 안팎) 이하로 줄여 주세요.", 422
+        )
     if menu_id is not None and not any(m.id == menu_id for m in store.menus):
         raise not_found("메뉴")
     raw_langs = langs or form.getlist("langs[]") or ["en", "zh"]

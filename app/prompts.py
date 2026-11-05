@@ -56,15 +56,6 @@ Include only the requested language codes plus "ko".
 """.strip()
 
 
-MERCHANT_SCRIPT_PROMPT = """
-A Korean traditional-market merchant wrote (or said, via speech-to-text) a script for their 20-30 second promo video.
-Turn it into subtitles. Return ONLY JSON: {"ko": [...], "en": [...], "zh": [...]} (only "ko" plus the requested codes).
-Rules:
-- ko: 4 to 6 short lines (each <= 25 Korean characters) that keep the merchant's own words and tone.
-  You may drop filler words, fix obvious speech-to-text mistakes, and shorten, but never add facts, prices or claims.
-- Every other language: translate each ko line, same number of lines, in the same order. zh means Simplified Chinese.
-""".strip()
-
 
 TRANSLATE_LINES_PROMPT = """
 Translate these Korean subtitle lines of a traditional-market food stall promo video.

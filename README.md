@@ -1,7 +1,7 @@
 # 전통시장 AI 숏폼 API (FastAPI)
 
 전통시장 사장님이 **말로 가게를 등록**하고 **사진 몇 장**을 올리면, AI가 **다국어 가게 정보**와
-**15초 세로 숏폼(언어별 VTT 자막)**을 만들어 외국인 손님 피드에 올린다. 1차 대상: 서대문구 독립문영천시장·포방터시장.
+**20~30초 세로 숏폼(언어별 VTT 자막)**을 만들어 외국인 손님 피드에 올린다. 1차 대상: 서대문구 독립문영천시장·포방터시장.
 
 - 배포: https://hack.220-66-233-75.nip.io (Swagger `/docs`)
 - API 계약 기준: 노션 **04. 백엔드·API**. 경로·필드를 바꿀 때는 노션도 같이 고친다.
@@ -89,7 +89,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | POST | `/merchant/onboarding/sessions/{id}/confirm` | `{step, accepted, edits?}` |
 | GET | `/merchant/onboarding/sessions/{id}/summary` | 단계별 값, `needs_check`, `preview_en` |
 | POST | `/merchant/onboarding/sessions/{id}/publish` | 저장 + 번역 → `{store_id}` |
-| POST | `/merchant/stores/{id}/videos` | multipart `photos`(3~5), `audio`, `menu_id`, `langs` → 202 `{job_id}` |
+| POST | `/merchant/stores/{id}/videos` | multipart `photos`(1~5), `script`(선택), `audio`(선택, 스크립트 대신), `menu_id`, `langs` → 202 `{job_id}`. 20~30초 무음 영상 |
 | GET | `/merchant/videos/jobs/{job_id}` | `queued/processing/done/failed`, `progress` |
 | PATCH | `/merchant/stores/{id}`, `/merchant/menus/{id}` | 수정 + 번역 재생성 (P1) |
 | GET | `/contents`, `/contents/{id}/foods` | K-콘텐츠 (P1) |
@@ -99,6 +99,13 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 - 에러: `{"error": {"code": "STT_FAILED", "message": "..."}}`. 코드: `VALIDATION_ERROR`, `NOT_FOUND`, `STT_FAILED`,
   `LLM_FAILED`, `UPLOAD_TOO_LARGE`, `INVALID_IMAGE`, `STEP_MISMATCH`, `NO_ANSWER`, `ONBOARDING_INCOMPLETE`, `ONBOARDING_DONE`, `FORBIDDEN`, `INTERNAL_ERROR`
 
+### 영상 생성 규칙
+
+- 자막 원문: 직접 쓴 `script` → 없으면 `audio` 를 STT 로 바꾼 글 → 둘 다 없으면 가게 기본 정보(이름·시장·대표 메뉴·가격·이야기)
+- 사장님 문장은 고치지 않고 줄만 나눈다(줄당 25자 안팎). 6줄을 넘는 긴 스크립트만 AI 가 줄인다
+- 길이 = 자막 줄 수 × 5초, 20~30초. 사진이 적으면 한 장을 확대·이동·축소 구간으로 나눠 보여준다
+- 소리는 넣지 않는다 (녹음은 자막용으로만 쓴다)
+
 ### AI 실패 시 동작
 
 | 단계 | 실패 시 |
@@ -106,7 +113,7 @@ cp .env.example .env           # 키 없이 두면 mock 모드 (STT·LLM·번역
 | STT | `STT_FAILED` → 다시 말하기 또는 `text` 로 입력 |
 | 단계별 정리 | JSON 파싱 1회 재시도 → 규칙 기반 정리 + `needs_check` 에 확인 요청 |
 | 번역 | 음식 용어집 → 없으면 한국어 원문 |
-| 영상 자막 | 가게 정보로 만든 템플릿 문장 |
+| 영상 자막 | 사장님 스크립트 → 번역 실패 시 한국어 원문 / 스크립트 없으면 가게 정보로 만든 템플릿 문장 |
 | 영상 렌더링 | job `failed`. 미리 렌더링한 영상은 피드에 남아 있다 |
 
 API 키는 코드·커밋·응답·로그에 넣지 않는다. 프로바이더 원본 에러 메시지는 사용자에게 돌려주지 않는다.

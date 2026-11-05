@@ -24,6 +24,7 @@ def test_video_job_renders_but_stays_out_of_feed(client) -> None:
 
     video = client.get(f"/api/v1/videos/{job_id}").json()
     assert video["duration"] == 20.0  # 스크립트 없음 → 가게 정보 자막 4줄 → 20초
+    assert video["script_source"] == "auto"
     assert client.get(video["video_url"]).headers["content-type"] == "video/mp4"
     assert client.get(video["thumbnail_url"]).status_code == 200
     assert set(video["subtitles"]) == {"ko", "en", "zh"}
@@ -107,6 +108,7 @@ def test_one_photo_with_script_uses_script_as_subtitles(client) -> None:
     # mock 모드라 번역 대신 한국어 원문
     assert "한 번 드셔 보세요!" in client.get(video["subtitles"]["en"]).text
     assert _silent(client, video["video_url"])
+    assert video["script_source"] == "script" and video["script_ko"][0] == "40년 동안 영천시장에서"
 
 
 def test_recording_becomes_script_but_not_sound(client) -> None:
@@ -114,14 +116,24 @@ def test_recording_becomes_script_but_not_sound(client) -> None:
     video = _make(client, files)
     # mock STT 는 고정 문장("40년 동안 영천시장에서...")을 돌려준다
     assert "40년 동안" in client.get(video["subtitles"]["ko"]).text
+    assert video["script_source"] == "stt"
     assert 20.0 <= video["duration"] <= 30.0
     assert _silent(client, video["video_url"])
 
 
-def test_long_script_caps_at_30_seconds(client) -> None:
-    script = " ".join(f"{i}번째 문장이에요." for i in range(1, 12))
-    video = _make(client, [("photos", (f"{i}.jpg", _jpeg("gray"), "image/jpeg")) for i in range(2)], {"script": script})
-    assert video["duration"] == 30.0
+def test_script_length_rules(client) -> None:
+    photos = [("photos", (f"{i}.jpg", _jpeg("gray"), "image/jpeg")) for i in range(2)]
+    seven = " ".join(f"{i}번째 문장이에요." for i in range(1, 8))
+    assert _make(client, photos, {"script": seven})["duration"] == 28.0  # 7줄 x 4초
+    eight = " ".join(f"{i}번째 문장이에요." for i in range(1, 9))
+    r = client.post("/api/v1/merchant/stores/1/videos", files=photos, data={"script": eight})
+    assert_error(r, 422, "SCRIPT_TOO_LONG")
+
+
+def test_video_duration_rule() -> None:
+    from app.services.video import video_duration
+
+    assert [video_duration(n) for n in (1, 4, 5, 6, 7)] == [20.0, 20.0, 25.0, 30.0, 28.0]
 
 
 def test_plan_segments_splits_long_single_photo() -> None:

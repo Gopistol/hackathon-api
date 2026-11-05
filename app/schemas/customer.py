@@ -133,6 +133,8 @@ class VideoDetail(VideoBrief):
     store_id: int
     menu: TopMenu | None
     status: str
+    script_ko: list[str] = Field(description="한국어 자막 줄")
+    script_source: str | None = Field(description="script(직접 쓴 스크립트) | stt(녹음) | auto(가게 기본 정보)")
 
 
 class ContentOut(BaseModel):

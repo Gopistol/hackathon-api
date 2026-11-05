@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 W, H, FPS = 720, 1280, 30
 MIN_SECONDS, MAX_SECONDS = 20.0, 30.0
 SECONDS_PER_LINE = 5.0  # 자막 한 줄이 화면에 머무는 시간
+MIN_SECONDS_PER_LINE = 4.0
 MAX_SEGMENT = 7.0  # 사진 한 장이 한 가지 움직임으로 보이는 최대 시간. 넘으면 다른 움직임으로 나눈다
 RENDER_TIMEOUT = 60
 MAX_PIXELS = 48_000_000  # 8000x6000. 디코딩 메모리(RGB 약 144MB)를 서버 600MB 안에 둔다
@@ -85,8 +86,11 @@ def write_vtt(lines: list[str], duration: float, dst: Path) -> None:
 
 
 def video_duration(n_lines: int) -> float:
-    """자막 줄 수에 맞춘 길이. 20~30초."""
-    return min(max(n_lines * SECONDS_PER_LINE, MIN_SECONDS), MAX_SECONDS)
+    """자막 줄 수에 맞춘 길이 (노션 04 계약). 줄당 5초, 30초를 넘으면 줄당 4초까지 줄인다. 20초보다 짧으면 20초."""
+    seconds = n_lines * SECONDS_PER_LINE
+    if seconds > MAX_SECONDS:
+        seconds = n_lines * MIN_SECONDS_PER_LINE
+    return min(max(seconds, MIN_SECONDS), MAX_SECONDS)
 
 
 def plan_segments(n_photos: int, duration: float) -> list[tuple[int, float]]:
@@ -197,11 +201,13 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             script_file = wd / "script.txt"
             # 자막 원문: 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보. 녹음은 영상에 넣지 않는다.
             merchant_text = script_file.read_text(encoding="utf-8").strip() if script_file.exists() else ""
+            source = "script" if merchant_text else "auto"
             if not merchant_text and audio:
                 try:
                     merchant_text = await asyncio.wait_for(
                         ai.transcribe(llm, audio.read_bytes(), audio.name, "story"), STT_BUDGET
                     )
+                    source = "stt" if merchant_text else "auto"
                 except (AppError, TimeoutError):
                     pass  # 가게 정보로 만든다
             store = db.get(Store, video.store_id)
@@ -234,6 +240,7 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             video.video_path = f"videos/{video_id}.mp4"
             video.thumbnail_path = f"thumbs/{video_id}.jpg"
             video.subtitles, video.script, video.duration = subtitles, script, duration
+            video.script_source = source
             video.job_status, video.progress = "done", 100
             db.commit()
         except Exception as e:

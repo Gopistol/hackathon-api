@@ -25,6 +25,8 @@ class Video(Base):
     subtitles: Mapped[dict] = mapped_column(JSON, default=dict)
     # {"ko": [...], "en": [...]} 자막 원문
     script: Mapped[dict] = mapped_column(JSON, default=dict)
+    # script(직접 쓴 스크립트) | stt(녹음) | auto(가게 기본 정보)
+    script_source: Mapped[str | None] = mapped_column(String(10), default=None)
     duration: Mapped[float | None] = mapped_column(Float, default=None)
     # 시드로 넣은 미리 렌더링 영상
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)

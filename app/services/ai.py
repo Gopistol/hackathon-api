@@ -11,7 +11,6 @@ import re
 from app.core.errors import AppError
 from app.llm import ChatMessage, LLMError, LLMProvider
 from app.prompts import (
-    MERCHANT_SCRIPT_PROMPT,
     TRANSLATE_LINES_PROMPT,
     TRANSLATE_PROMPT,
     VIDEO_SCRIPT_PROMPT,
@@ -433,7 +432,7 @@ async def video_script(llm: LLMProvider, ctx: dict, langs: list[str]) -> dict[st
 
 # ---------- 사장님 스크립트 → 자막 ----------
 
-MAX_SCRIPT_LINES = 6  # 줄당 5초 → 최대 30초
+MAX_SCRIPT_LINES = 7  # 6줄까지 줄당 5초, 7줄은 줄당 4초(28초). 넘으면 SCRIPT_TOO_LONG
 _LINE_CHARS = 25
 
 
@@ -452,14 +451,14 @@ def _balanced_parts(sentence: str) -> list[str]:
     return [*parts, line] if line else parts
 
 
-def split_script(text: str) -> list[str]:
-    """문장 단위로 나누고 긴 문장은 비슷한 길이로 잘라 자막 줄로 만든다."""
+def split_script(text: str, limit: int | None = MAX_SCRIPT_LINES) -> list[str]:
+    """문장 단위로 나누고 긴 문장은 비슷한 길이로 잘라 자막 줄로 만든다. limit=None 이면 자르지 않는다."""
     lines = []
     for sentence in re.split(r"(?<=[.!?。！？~])\s+|\n+", text.strip()):
         sentence = " ".join(sentence.split())
         if sentence:
             lines.extend(_balanced_parts(sentence) if len(sentence) > _LINE_CHARS else [sentence])
-    return lines[:MAX_SCRIPT_LINES]
+    return lines if limit is None else lines[:limit]
 
 
 def merchant_script_fallback(text: str, langs: list[str]) -> dict[str, list[str]]:
@@ -476,29 +475,14 @@ def _same_length_lines(data: dict, lang: str, n: int) -> list[str] | None:
 
 
 async def merchant_script(llm: LLMProvider, text: str, langs: list[str]) -> dict[str, list[str]]:
-    """사장님 문장이 6줄 안에 들어가면 한국어는 그대로 줄만 나누고 번역만 맡긴다 (AI 가 말을 바꾸지 않게).
-    너무 길 때만 AI 가 줄인다. 실패하면 다른 언어도 한국어 원문."""
+    """사장님 문장은 그대로 줄만 나눠 한국어 자막으로 쓰고, AI 는 번역만 한다. 실패하면 다른 언어도 한국어 원문."""
     script = merchant_script_fallback(text, langs)
     if is_mock(llm):
         return script
-    all_lines = [x for x in re.split(r"(?<=[.!?。！？~])\s+|\n+", text.strip()) if x.strip()]
-    fits = sum(len(_balanced_parts(x)) if len(x) > _LINE_CHARS else 1 for x in all_lines) <= MAX_SCRIPT_LINES
+    ko = script["ko"]
     try:
-        if fits:
-            ko = script["ko"]
-            payload = json.dumps({"langs": langs, "lines": ko}, ensure_ascii=False)
-            data = await complete_json(llm, TRANSLATE_LINES_PROMPT, payload)
-        else:
-            payload = json.dumps({"langs": ["ko", *langs], "script": text[:1500]}, ensure_ascii=False)
-            data = await complete_json(llm, MERCHANT_SCRIPT_PROMPT, payload)
-            ko = data.get("ko")
-            if not (isinstance(ko, list) and 1 <= len(ko) <= MAX_SCRIPT_LINES and all(isinstance(x, str) and x.strip() for x in ko)):
-                return script
-            ko = [x.strip()[:60] for x in ko]
+        data = await complete_json(llm, TRANSLATE_LINES_PROMPT, json.dumps({"langs": langs, "lines": ko}, ensure_ascii=False))
     except (LLMError, ValueError) as e:
         logger.warning("스크립트 자막 번역 실패, 원문으로 대체: %s", type(e).__name__)
         return script
-    result = {"ko": ko}
-    for lang in langs:
-        result[lang] = _same_length_lines(data, lang, len(ko)) or ko
-    return result
+    return {"ko": ko, **{lang: _same_length_lines(data, lang, len(ko)) or ko for lang in langs}}
