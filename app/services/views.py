@@ -24,7 +24,7 @@ def media_url(path: str | None) -> str | None:
 MENU_PHOTOS = {
     **FOOD_PHOTOS,
     "기름떡볶이": "oil-tteokbokki",
-    "간장떡볶이": "oil-tteokbokki",
+    "간장떡볶이": "soy-tteokbokki",
     "어묵": "eomuk",
     "찹쌀도넛": "chapssal-doughnuts",
     "식혜": "sikhye",

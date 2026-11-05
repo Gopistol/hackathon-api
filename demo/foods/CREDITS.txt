@@ -14,9 +14,9 @@ hotteok.jpg | CC BY-SA 2.0 | Korea.net / Korean Culture and Information Service 
 메뉴 대표 사진 추가 (2026-11-06). 아래 사진은 실제 입점 가게 촬영본이 아닌 음식 참고 사진입니다.
 원본 파일을 변경하지 않았습니다. 화면에서만 object-fit으로 표시합니다.
 
-oil-tteokbokki.jpg — 간장·고추장 기름떡볶이가 함께 담긴 접시
+oil-tteokbokki.jpg — 붉은 양념의 기름떡볶이
 Korea.net / Korean Culture and Information Service (Jeon Han), CC BY-SA 2.0
-https://commons.wikimedia.org/wiki/File:Korea_Tongin_Market_03_(12920678333).jpg
+https://commons.wikimedia.org/wiki/File:Korea_Tongin_Market_08_(12920988314).jpg
 https://creativecommons.org/licenses/by-sa/2.0/
 
 eomuk.jpg — 영숙이네집, CC BY 4.0
@@ -42,3 +42,9 @@ https://www.kogl.or.kr/info/licenseType1.do
 wanja.jpg — Chloe Lim, CC BY 2.0
 https://commons.wikimedia.org/wiki/File:Donggeurang-ttaeng.jpg
 https://creativecommons.org/licenses/by/2.0/
+
+soy-tteokbokki.jpg — 간장떡볶이
+Scudsvlad, CC BY-SA 4.0
+https://commons.wikimedia.org/wiki/File:Ganjang-tteok-bokki.jpg
+https://creativecommons.org/licenses/by-sa/4.0/
+기름떡볶이·간장떡볶이 사진은 Wikimedia에서 제공하는 960px 축소본을 사용합니다.
