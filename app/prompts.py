@@ -64,3 +64,10 @@ Rules:
   You may drop filler words, fix obvious speech-to-text mistakes, and shorten, but never add facts, prices or claims.
 - Every other language: translate each ko line, same number of lines, in the same order. zh means Simplified Chinese.
 """.strip()
+
+
+TRANSLATE_LINES_PROMPT = """
+Translate these Korean subtitle lines of a traditional-market food stall promo video.
+Return ONLY JSON: {"<lang>": [...]} for each requested language code, with exactly the same number of lines,
+in the same order, one translation per line. Keep them short and natural. Do not add or change facts. zh = Simplified Chinese.
+""".strip()

@@ -149,3 +149,19 @@ def test_blob_filename_gets_extension_from_content(client, provider, monkeypatch
 )
 def test_audio_ext(head, ext) -> None:
     assert ai.audio_ext(head + b"\x00" * 16) == ext
+
+
+def test_short_merchant_script_keeps_exact_korean(provider, monkeypatch) -> None:
+    out = json.dumps({"en": ["Line one", "Line two"], "zh": ["一", "二"]})
+    fake = _fake(_text(out))
+    monkeypatch.setattr(provider._client.responses, "create", fake)
+    script = asyncio.run(ai.merchant_script(provider, "40년 동안 만들었어요. 드셔 보세요!", ["en", "zh"]))
+    assert script["ko"] == ["40년 동안 만들었어요.", "드셔 보세요!"]  # AI 가 고치지 않음
+    assert script["en"] == ["Line one", "Line two"]
+    assert "lines" in fake.kwargs["input"][0]["content"]  # 번역만 요청
+
+
+def test_merchant_script_translation_mismatch_falls_back_to_korean(provider, monkeypatch) -> None:
+    monkeypatch.setattr(provider._client.responses, "create", _fake(_text(json.dumps({"en": ["only one"]}))))
+    script = asyncio.run(ai.merchant_script(provider, "첫 문장이에요. 둘째 문장이에요.", ["en"]))
+    assert script["en"] == script["ko"]
