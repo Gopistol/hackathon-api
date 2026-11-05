@@ -90,7 +90,7 @@ _PROFILE_TEXT = "\n".join(
 _SPOKEN_RULES = """
 "say" is read aloud by text-to-speech to an elderly merchant on what feels like a phone call:
 - ONE short spoken Korean utterance, at most ~50 characters: an optional echo of ONE key word (a few characters) + exactly ONE question.
-- The app already played a filler ("네, 잘 들었어요.") before you speak, so do NOT start with 네/아/음 and do not thank them each turn.
+- Do NOT start with 네/아/음/그러시구나 and do not thank or praise them each turn; get to the question.
 - Do not read back everything they said and do not ask confirmation questions ("맞죠?", "맞으세요?", "~하신 거죠?").
   Anything uncertain goes to needs_check; the merchant checks it on the summary screen. Just move on to the next question.
 - Plain words, polite 존댓말, no emoji, no lists, no markdown. Say prices the way people talk ("4천 원").
@@ -202,18 +202,22 @@ How to interview:
 {_SPOKEN_RULES}
 """.strip()
 
-STORY_COMPOSE_PROMPT = """
-You edit a 20-30 second video narration from a recorded interview with a traditional-market merchant.
-The video plays the merchant's ORIGINAL VOICE, cut from the recordings, so you can only pick spans that were actually said.
-Input JSON: "store" and "turns": [{"turn": n, "text": transcript of that answer}].
+STORY_NARRATION_PROMPT = """
+You write the narration of a 20-30 second vertical video about a traditional-market merchant in Seodaemun-gu, Seoul,
+for foreign visitors. It is read aloud in Korean by a warm elderly market woman's voice, in the FIRST PERSON as the
+merchant ("저는 ...", "우리 가게는 ..."), and then dubbed into other languages.
+Input JSON: "store" (shop facts) and "turns": [{"turn": n, "question": what the interviewer asked, "text": the merchant's answer (speech-to-text)}].
 
-Return ONLY a JSON object, no markdown: {"quotes": [{"turn": n, "text": "exact span copied from that turn"}]}
+Return ONLY a JSON object, no markdown: {"lines": ["one spoken sentence", ...]}
 Rules:
-- Each "text" must be copied character by character from that turn's transcript (a continuous span). Do not fix grammar.
-- 2 to 5 quotes, total 90 to 150 Korean characters (about 20-30 seconds of speech).
-- Prefer complete phrases with concrete details (years, places, people, the market and neighborhood).
-  Skip fillers (음, 어, 그러니까) and greetings.
-- Order them as a small story: how it began → the market/neighborhood or what they kept over the years →
-  a memorable moment → a word to visitors. Include at least one quote about the market or neighborhood if there is one.
-- Leave out personal information about other people, health and money.
+- 4 to 6 sentences, each under 40 Korean characters, 100 to 170 characters in total (about 25 seconds).
+- Make it ONE flowing story, not a list of quotes: a hook → how it began → the market/neighborhood in the old days or
+  what they kept all these years → one memorable moment or person → an invitation to visitors.
+  Connect sentences naturally ("그때는", "지금도", "그래서").
+- Use ONLY facts the merchant actually said. Keep their concrete words (리어카, 옆집 순대 할머니, 명절 줄).
+  Never add years, numbers, names, places, prizes or feelings they did not say. Use "store" facts only for the shop
+  name, market name and menu names.
+- If they said little, write a shorter story (2-3 sentences) from what there is, plus a simple invitation.
+- Plain, warm spoken Korean an elderly merchant would say, polite 해요체. No emoji, no hashtags, no quotes marks.
+- Leave out other people's private information, health and money troubles.
 """.strip()

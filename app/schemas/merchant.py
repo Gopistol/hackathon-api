@@ -136,7 +136,7 @@ class InterviewTurnOut(BaseModel):
     covered: list[str] | None = Field(description="story 만. 이야기한 축 origin|years|craft|people|message")
     fillers: list[dict] | None = Field(
         None,
-        description="시작할 때만. [{text, audio_url}] 짧은 맞장구. 미리 받아 두고, 사장님 말이 끝나자마자 하나를 틀어 기다림을 메운다",
+        description="시작할 때만. [{text, audio_url}] 짧은 맞장구. 지금은 쓰지 않아 빈 목록 (매번 들으면 거슬린다는 의견)",
     )
     mode: str
 

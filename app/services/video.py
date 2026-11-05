@@ -513,11 +513,16 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             merchant_text = script_file.read_text(encoding="utf-8").strip() if script_file.exists() else ""
             source = "script" if merchant_text else "auto"
             voice_ko = None
+            narrated = False
             if interview_file.exists():
-                quotes = json.loads(interview_file.read_text(encoding="utf-8"))["quotes"]
+                story = json.loads(interview_file.read_text(encoding="utf-8"))
+                quotes = story["quotes"]
                 said = " ".join(q["text"] for q in quotes)
-                voice_ko, merchant_text = await _optional("원음 이어 붙이기", video_id, stitch_quotes(quotes, wd), (None, said))
-                merchant_text = merchant_text or said
+                if story.get("narration"):  # AI 가 쓴 이야기 → 아래에서 시장 할머니 목소리로 읽는다
+                    merchant_text, narrated = story["narration"], True
+                else:  # 못 썼으면 사장님 원음 구간을 이어 붙인다
+                    voice_ko, merchant_text = await _optional("원음 이어 붙이기", video_id, stitch_quotes(quotes, wd), (None, said))
+                    merchant_text = merchant_text or said
                 source = "interview" if merchant_text else "auto"
             elif not merchant_text and audio:
                 # 녹음은 소리로도 쓴다. 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다.
@@ -539,7 +544,7 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             menu = db.get(Menu, video.menu_id) if video.menu_id else None
             ctx = script_context(db, store, menu, merchant_text, langs)
             # 목소리로 쓰는 녹음은 말한 내용을 끝까지 자막·더빙에 담는다 (줄 수로 자르지 않는다)
-            limit = None if voice_ko else ai.MAX_SCRIPT_LINES
+            limit = None if voice_ko or narrated else ai.MAX_SCRIPT_LINES
             make = ai.merchant_script(llm, merchant_text, langs, limit) if merchant_text else ai.video_script(llm, ctx, langs)
             script = await _optional("자막 생성", video_id, asyncio.wait_for(make, SCRIPT_BUDGET))
             if not script or not script.get("ko"):

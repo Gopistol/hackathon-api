@@ -25,8 +25,8 @@ from app.prompts import (
     CATEGORY_PROFILES,
     REGISTER_INTERVIEW_PROMPT,
     STORY_BEATS,
-    STORY_COMPOSE_PROMPT,
     STORY_INTERVIEW_PROMPT,
+    STORY_NARRATION_PROMPT,
 )
 from app.services import ai, onboarding, tts
 from app.services.i18n import PAYMENTS, PAYMENT_KO
@@ -44,7 +44,7 @@ TURN_BUDGET = 8.0  # 초. 넘으면 고정 질문으로 이어 간다 (통화가
 TURN_MAX_TOKENS = 400  # 바뀐 항목과 할 말만 받는다 (출력이 짧을수록 빨리 온다)
 COMPOSE_BUDGET = 15.0
 HISTORY = 12  # 지난 질문·답을 전부 넘겨 맥락을 잃지 않게 한다 (최대 턴 수 이상)
-QUOTE_CHARS = (40, 170)  # 고른 구간 글자 수 (너무 짧으면 규칙으로, 길면 자른다)
+QUOTE_CHARS = (40, 170)  # 원문 구간 글자 수 (짧으면 짧은 답도 더하고, 길면 자른다)
 
 _STOP_RE = re.compile(r"그만\s*(할게|하자|해요|합시다|하고)|그게\s*다(예요|에요|야|입니다)|이제\s*됐|다\s*했어|끝낼게")
 
@@ -55,10 +55,9 @@ CLOSING = {
 REPROMPT = "잘 못 들었어요. 한 번만 더 말씀해 주세요."
 # 연달아 못 알아들으면 말하는 방법을 알려 준다
 REPROMPT_AGAIN = "잘 안 들려요. 휴대폰을 입 가까이 대고 천천히 말씀해 주세요."
-# 말이 끝나자마자 프론트가 바로 틀어 주는 짧은 맞장구 (다음 질문을 기다리는 동안 조용하지 않게).
-# "네~"처럼 너무 짧으면 음성 합성이 다른 나라 말처럼 읽는 경우가 있어 한 마디 이상으로 둔다.
-FILLERS = ["네, 잘 들었어요.", "아, 그러시구나.", "네, 알겠어요."]
-# 맞장구를 이미 틀었으니 AI 말 앞의 "네," "아," 는 뺀다 (같은 말이 두 번 들리지 않게)
+# 말이 끝나자마자 틀어 주던 맞장구. 매번 들으면 거슬린다는 의견이 있어 쓰지 않는다 (응답 필드는 빈 목록으로 남긴다)
+FILLERS: list[str] = []
+# AI 말 앞에 매번 붙는 "네," "아," 는 뺀다 (같은 말이 반복돼 거슬린다)
 _CONFIRM_RE = re.compile(r"(맞(나요|죠|으세요|습니까|아요|지요)|하신\s*거죠|이신\s*거죠|이시죠)\s*\??\s*$")
 _LEAD_FILLER = re.compile(r"^(네|예|아|음|아하)[,.~!]*\s+")
 
@@ -241,27 +240,36 @@ async def turn(
     asking = iv.state.get("asking", "")
     audio_path = None
     typed = " ".join((text or "").split())
-    if audio:
-        audio_path = _save_audio(iv, audio)
+
+    async def server_stt() -> str:
         try:
             if ai.is_mock(llm):
-                transcript = MOCK_ANSWERS.get(asking, "네")
-            else:
-                transcript = await asyncio.wait_for(ai.transcribe(llm, audio, filename, "story"), STT_BUDGET)
+                return MOCK_ANSWERS.get(asking, "네")
+            return await asyncio.wait_for(ai.transcribe(llm, audio, filename, "story"), STT_BUDGET)
         except TimeoutError:
             logger.warning("인터뷰 음성 인식 시간 초과")
-            transcript = ""
         except AppError as e:
             if e.code != "STT_FAILED":
                 raise
-            transcript = ""
-        # 서버 음성 인식이 실패하면 브라우저가 실시간으로 받아 적은 글(text)을 쓴다
-        transcript = transcript or ai.drop_stt_hallucinations(typed)
+        return ""
+
+    stt_task = None
+    if audio:
+        audio_path = _save_audio(iv, audio)
+        live = ai.drop_stt_hallucinations(typed)
+        if live and not ai.is_mock(llm):
+            # 브라우저가 받아 적은 글이 있으면 그걸로 바로 다음 질문을 만들고, 서버 인식은 동시에 돌려 기록에 쓴다
+            stt_task = asyncio.create_task(server_stt())
+            transcript = live
+        else:
+            transcript = (await server_stt()) or live
     else:
         transcript = typed
     if _is_echo(transcript, iv.state.get("last_say", "")):
         transcript = ""  # 스피커로 나간 AI 질문이 마이크로 다시 들어온 것
     if not transcript:
+        if stt_task:
+            stt_task.cancel()
         # 통화가 끊기지 않게 에러 대신 다시 묻는다
         misses = iv.state.get("misses", 0) + 1
         iv.state = {**iv.state, "misses": misses}
@@ -270,15 +278,23 @@ async def turn(
         return out
     iv.state = {**iv.state, "misses": 0}
 
-    # alt: 브라우저가 받아 적은 글. 서버 인식과 다르면 LLM 이 둘을 보고 맞는 쪽을 고른다 ("분식집" / "한식집")
+    # alt: 다른 인식 결과. 서로 다르면 LLM 이 둘을 보고 맞는 쪽을 고른다 ("분식집" / "한식집")
     alt = ai.drop_stt_hallucinations(typed) if audio and typed and _compact(typed) != _compact(transcript) else None
     iv.turns = [*iv.turns, {"question": iv.state.get("last_say", ""), "transcript": transcript, "audio_path": audio_path, "alt": alt}]
-    if _STOP_RE.search(transcript):
-        say, finish = "", True
-    elif iv.kind == "register":
-        say, finish = await _register_step(llm, iv, transcript)
-    else:
-        say, finish = await _story_step(db, llm, iv, transcript)
+    try:
+        if _STOP_RE.search(transcript):
+            say, finish = "", True
+        elif iv.kind == "register":
+            say, finish = await _register_step(llm, iv, transcript)
+        else:
+            say, finish = await _story_step(db, llm, iv, transcript)
+        if stt_task:  # 기록에는 녹음과 맞는 서버 인식 결과를 남긴다 (영상 원음 자르기에 쓴다)
+            heard = await stt_task
+            if heard and _compact(heard) != _compact(transcript):
+                iv.turns = [*iv.turns[:-1], {**iv.turns[-1], "transcript": heard, "alt": transcript}]
+    finally:
+        if stt_task and not stt_task.done():
+            stt_task.cancel()
     if finish or len(iv.turns) >= MAX_TURNS[iv.kind]:
         _finish(db, iv)
         say = CLOSING[iv.kind]
@@ -426,9 +442,40 @@ def _ground(new: dict, old: dict, iv: Interview, transcript: str, needs: list[st
     return new
 
 
+_SINO = dict(zip("일이삼사오육칠팔구", range(1, 10)))
+_NATIVE_TENS = {"열": 10, "스물": 20, "스무": 20, "서른": 30, "마흔": 40, "쉰": 50, "예순": 60, "일흔": 70, "여든": 80, "아흔": 90}
+_NATIVE_ONES = {"하나": 1, "한": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "넷": 4, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9}
+_NATIVE_RE = re.compile(f"({'|'.join(_NATIVE_TENS)})?\\s?({'|'.join(sorted(_NATIVE_ONES, key=len, reverse=True))})?")
+
+
+def _sino(word: str) -> int:
+    """'삼십' → 30, '만 오천' → 15000."""
+    total = sec = num = 0
+    for c in word:
+        if c in _SINO:
+            num = _SINO[c]
+        elif c in "십백천":
+            sec += (num or 1) * {"십": 10, "백": 100, "천": 1000}[c]
+            num = 0
+        elif c == "만":
+            total += (sec + num or 1) * 10000
+            sec = num = 0
+    return total + sec + num
+
+
+def _spoken_numbers(text: str) -> list[str]:
+    """한글로 말한 숫자를 아라비아 숫자로 ("삼십 년" → 30, "네 시" → 4, "서른다섯" → 35)."""
+    out = [str(_sino(m.group())) for m in re.finditer(r"[일이삼사오육칠팔구십백천만]+", text)]
+    for m in _NATIVE_RE.finditer(text):
+        if m.group(1) or m.group(2):
+            out.append(str(_NATIVE_TENS.get(m.group(1), 0) + _NATIVE_ONES.get(m.group(2), 0)))
+    return out
+
+
 def _numbers_ok(say: str, *sources: str) -> bool:
-    """AI 가 할 말에 나온 숫자가 사장님 말이나 정리한 내용에 있는지 (지어낸 연도·가격 막기)."""
-    known = re.sub(r"[,\s]", "", " ".join(sources))
+    """AI 가 할 말에 나온 숫자가 사장님 말이나 정리한 내용에 있는지 (지어낸 연도·가격 막기). 한글 숫자도 읽는다."""
+    raw = " ".join(sources)
+    known = re.sub(r"[,\s]", "", raw) + " " + " ".join(_spoken_numbers(raw))
     return all(n in known for n in re.findall(r"\d+", say.replace(",", "")))
 
 
@@ -652,15 +699,6 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
     return _LEAD_FILLER.sub("", say or ""), finish
 
 
-def _exact_span(transcript: str, quote: str) -> str | None:
-    """quote 가 transcript 에 그대로 있으면 원문 구간을 돌려준다 (띄어쓰기·끝 문장부호 차이는 허용)."""
-    words = quote.strip(" .,!?~\"'").split()
-    if not words:
-        return None
-    m = re.search(r"\s+".join(map(re.escape, words)), transcript)
-    return m.group(0) if m else None
-
-
 _FILLER_ONLY = re.compile(r"^(네|예|응|음+|어+|아+|그렇죠|맞아요|글쎄요|몰라요|없어요)[.!?~\s]*$")
 
 
@@ -694,39 +732,46 @@ def _rule_quotes(turns: list[dict]) -> list[dict]:
     return sorted(quotes, key=lambda q: q["turn"])
 
 
+NARRATION_CHARS = (40, 230)
+
+
+async def _narration(db: Session, llm: LLMProvider, iv: Interview) -> str | None:
+    """인터뷰 전체를 읽고 흐름이 있는 1인칭 이야기를 쓴다. 사장님이 하지 않은 숫자가 있거나 형식이 틀리면 None."""
+    payload = {
+        "store": _store_facts(db, iv),
+        "turns": [{"turn": i, "question": t["question"], "text": t["transcript"]} for i, t in enumerate(iv.turns)],
+    }
+    try:
+        data = await asyncio.wait_for(
+            ai.complete_json(llm, STORY_NARRATION_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
+            COMPOSE_BUDGET,
+        )
+        lines = [" ".join(str(x).split()) for x in data.get("lines") or [] if str(x).strip()]
+    except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
+        logger.warning("이야기 대본 쓰기 실패, 원문 구간으로 대체: %s", type(e).__name__)
+        return None
+    text = " ".join(x if x[-1] in ".!?~" else f"{x}." for x in lines)
+    said = " ".join(f"{t['transcript']} {t.get('alt') or ''}" for t in iv.turns)
+    if not NARRATION_CHARS[0] <= len(text) <= NARRATION_CHARS[1] or not _numbers_ok(text, said, json.dumps(payload["store"], ensure_ascii=False)):
+        logger.warning("이야기 대본이 길이·숫자 검사에 걸려 원문 구간으로 대체합니다")
+        return None
+    return text
+
+
 async def compose(db: Session, llm: LLMProvider, iv: Interview) -> dict:
-    """원음에서 그대로 쓸 구간을 고른다. 이미 골랐으면 그대로 돌려준다."""
+    """영상에 쓸 이야기를 만든다. 이미 만들었으면 그대로 돌려준다.
+
+    narration: AI 가 인터뷰 전체로 쓴 흐름 있는 이야기 (시장 할머니 목소리로 읽는다).
+    quotes: 원문 구간. narration 을 못 만들면 이걸 사장님 원래 목소리로 이어 붙인다."""
     if iv.result.get("quotes") is not None:
         return iv.result
-    quotes = []
-    if not ai.is_mock(llm) and iv.turns:
-        payload = {
-            "store": _store_facts(db, iv),
-            "turns": [{"turn": i, "text": t["transcript"]} for i, t in enumerate(iv.turns)],
-        }
-        try:
-            data = await asyncio.wait_for(
-                ai.complete_json(llm, STORY_COMPOSE_PROMPT, json.dumps(payload, ensure_ascii=False), TURN_MAX_TOKENS),
-                COMPOSE_BUDGET,
-            )
-            total = 0
-            for q in data.get("quotes") or []:
-                i = int(q.get("turn", -1))
-                span = _exact_span(iv.turns[i]["transcript"], str(q.get("text") or "")) if 0 <= i < len(iv.turns) else None
-                if span and total + len(span) <= QUOTE_CHARS[1]:
-                    quotes.append({"turn": i, "text": span})
-                    total += len(span)
-            if total < QUOTE_CHARS[0]:
-                quotes = []
-        except (LLMError, ValueError, TypeError, AttributeError, TimeoutError) as e:
-            logger.warning("이야기 구간 고르기 실패, 규칙으로 대체: %s", type(e).__name__)
-            quotes = []
-    quotes = quotes or _rule_quotes(iv.turns)
-    script = " ".join(q["text"] if q["text"][-1] in ".!?~" else f"{q['text']}." for q in quotes)
-    iv.result = {**iv.result, "quotes": quotes, "script_ko": script}
+    quotes = _rule_quotes(iv.turns)
+    narration = await _narration(db, llm, iv) if quotes and not ai.is_mock(llm) else None
+    script = narration or " ".join(q["text"] if q["text"][-1] in ".!?~" else f"{q['text']}." for q in quotes)
+    iv.result = {**iv.result, "quotes": quotes, "narration": narration, "script_ko": script}
     store = db.get(Store, iv.store_id)
     if script and store:
-        store.story_ko = script  # 가게 페이지 '사장님 이야기'도 사장님 말 그대로
+        store.story_ko = script  # 가게 페이지 '사장님 이야기'
     db.commit()
     return iv.result
 
