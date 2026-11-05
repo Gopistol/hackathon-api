@@ -6,15 +6,19 @@
   시작에 가게 이름, 끝에 메뉴·가격·결제 카드를 넣는다 (DB 값만 쓴다).
 - 소리: 녹음이 있으면 한국어 영상은 사장님 원래 목소리, 외국어 영상은 사장님 목소리를 복제해 더빙한다.
   복제 더빙(ElevenLabs) → AI 기본 목소리(OpenAI) → 원래 목소리 순서로 대체한다.
-  녹음이 없거나 읽을 수 없으면 소리 없는 영상이다.
+  녹음이 없으면(스크립트·가게 정보) 자막 글을 시장 할머니 목소리(ElevenLabs)로 언어마다 읽는다.
+  그것도 안 되면 AI 기본 목소리, 그것도 안 되면 소리 없는 영상이다.
+- 더빙·자막 시간 맞추기·전환 효과 같은 단계는 실패해도 대체해서 이어 간다. 영상은 어떻게든 끝까지 만든다.
 """
 
 import asyncio
 import io
+import json
 import logging
 import math
 import re
 import shutil
+import traceback
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
@@ -22,7 +26,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageErr
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.db.session import SessionLocal
-from app.llm import LLMError, LLMProvider
+from app.llm import LLMProvider
 from app.models import Menu, Store, Video
 from app.services import ai, elevenlabs, subtitles
 from app.services.i18n import PAYMENT_KO, load_translations
@@ -34,7 +38,7 @@ MIN_SECONDS, MAX_SECONDS = 20.0, 30.0
 SECONDS_PER_LINE = 5.0  # 자막 한 줄이 화면에 머무는 시간
 MIN_SECONDS_PER_LINE = 4.0
 MAX_SEGMENT = 7.0  # 사진 한 장이 한 가지 움직임으로 보이는 최대 시간. 넘으면 다른 움직임으로 나눈다
-RENDER_TIMEOUT = 90  # 언어 하나당
+RENDER_TIMEOUT = 120  # 언어 하나당 (CPU 2개 서버 기준 여유)
 MAX_PIXELS = 48_000_000  # 8000x6000. 디코딩 메모리(RGB 약 144MB)를 서버 600MB 안에 둔다
 STT_BUDGET = 10  # 초. 영상 자막용 음성 인식이 늦으면 건너뛴다
 SCRIPT_BUDGET = 12  # 초. 자막 생성이 늦으면 템플릿 문장을 쓴다
@@ -193,16 +197,19 @@ async def render(
     voice: Path | None = None,
     background: Path | None = None,
     subtitles_ass: Path | None = None,
+    simple: bool = False,
 ) -> float:
     """사진을 이어 붙여 MP4 를 만들고 길이(초)를 돌려준다.
 
     voice 가 없으면 무음 트랙만 둔다. background 는 AI 기본 목소리로 더빙했을 때 뒤에 작게 까는
-    사장님 원래 목소리. subtitles_ass 는 영상에 넣을 자막."""
+    사장님 원래 목소리. subtitles_ass 는 영상에 넣을 자막.
+    simple 은 다시 시도할 때 쓰는 가벼운 설정 (사진당 한 장면, 전환 효과 없이 이어 붙임)."""
     s = get_settings()
-    segments = plan_segments(len(photos), duration)
+    segments = [(i, duration / len(photos)) for i in range(len(photos))] if simple else plan_segments(len(photos), duration)
     n = len(segments)
+    overlap = 0.0 if simple else XFADE
     # 전환 구간만큼 장면이 겹치므로 그만큼 각 장면을 늘린다.
-    frames = math.ceil((duration + (n - 1) * XFADE) / n * FPS)
+    frames = math.ceil((duration + (n - 1) * overlap) / n * FPS)
     clip = frames / FPS
 
     args = ["-loglevel", "error", "-nostats"]
@@ -217,7 +224,10 @@ async def render(
 
     filters = [_clip_filter(i, frames) for i in range(n)]
     last = "v0"
-    for i in range(1, n):
+    if simple and n > 1:
+        filters.append("".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[cat]")
+        last = "cat"
+    for i in range(1, 1 if simple else n):
         filters.append(
             f"[{last}][v{i}]xfade=transition={_TRANSITIONS[(i - 1) % len(_TRANSITIONS)]}"
             f":duration={XFADE}:offset={i * (clip - XFADE):.3f}[x{i}]"
@@ -242,7 +252,7 @@ async def render(
     args += [
         "-filter_complex", ";".join(filters),
         "-map", "[v]", "-map", "[a]", "-t", f"{duration:.2f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "ultrafast" if simple else "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k" if voice else "32k", "-ar", "44100",
         "-movflags", "+faststart", "-threads", "2",
         str(out.resolve()),
@@ -255,6 +265,7 @@ async def render(
 # ---------- 더빙 ----------
 
 DUB_INSTRUCTIONS = {
+    "ko": "전통시장에서 수십 년 장사한 할머니처럼 따뜻하고 정겹게, 조금 천천히 한국어로 말하세요.",
     "en": "Speak English as a warm, friendly vendor at a Korean traditional market. Natural and upbeat, medium pace.",
     "zh": "用自然亲切的普通话说话，像韩国传统市场里热情的摊主。语速适中。",
 }
@@ -269,13 +280,13 @@ async def _speak(llm: LLMProvider, text: str, lang: str, clone_id: str | None) -
     if clone_id:
         try:
             return await asyncio.wait_for(elevenlabs.speak(text, clone_id), DUB_BUDGET), "clone"
-        except (elevenlabs.ElevenLabsError, TimeoutError):
+        except Exception:
             logger.warning("복제 목소리 더빙 실패 lang=%s, AI 목소리로 대신합니다.", lang)
     speak = getattr(llm, "speak", None)
     if speak and not ai.is_mock(llm):
         try:
             return await asyncio.wait_for(speak(text, DUB_INSTRUCTIONS.get(lang)), DUB_BUDGET), "ai"
-        except (LLMError, TimeoutError):
+        except Exception:
             logger.warning("AI 목소리 더빙 실패 lang=%s, 원래 목소리로 대신합니다.", lang)
     return None, "original"
 
@@ -286,7 +297,7 @@ async def dub(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], 
     if elevenlabs.enabled():
         try:
             clone_id = await asyncio.wait_for(elevenlabs.clone_voice(voice_ko.read_bytes(), voice_ko.name), DUB_BUDGET)
-        except (elevenlabs.ElevenLabsError, TimeoutError):
+        except Exception:
             logger.warning("목소리 복제 실패, AI 목소리로 더빙합니다.")
     try:
         # 네트워크 대기라 언어별로 동시에 한다
@@ -305,15 +316,97 @@ async def dub(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], 
     return voices
 
 
+async def narrate(llm: LLMProvider, script: dict[str, list[str]], langs: list[str], wd: Path) -> dict:
+    """녹음이 없을 때: 언어마다 자막 글을 시장 할머니 목소리로 읽는다 → {lang: (음성 파일, "narrator"|"ai")}.
+    목소리를 못 만든 언어는 빠지고 소리 없는 영상이 된다."""
+    voice_id = get_settings().elevenlabs_story_voice_id if elevenlabs.enabled() else None
+    results = await asyncio.gather(*(_speak(llm, _spoken(script.get(lang) or script["ko"], lang), lang, voice_id) for lang in langs))
+    voices = {}
+    for lang, (mp3, engine) in zip(langs, results):
+        if mp3:
+            path = wd / f"narration_{lang}.mp3"
+            path.write_bytes(mp3)
+            voices[lang] = (path, "narrator" if engine == "clone" else engine)
+    return voices
+
+
 async def align(voice: Path, text: str) -> subtitles.Alignment | None:
     """자막 시간을 음성에 맞춘다. 안 되면 None 을 돌려 글자 수 비율로 나누게 한다."""
     if not elevenlabs.enabled():
         return None
     try:
         return await asyncio.wait_for(elevenlabs.align(voice.read_bytes(), voice.name, text), ALIGN_BUDGET)
-    except (elevenlabs.ElevenLabsError, TimeoutError):
+    except Exception:
         logger.warning("자막 시간 맞추기 실패, 글자 수 비율로 나눕니다.")
         return None
+
+
+# ---------- 이야기 인터뷰 원음 이어 붙이기 ----------
+
+QUOTE_GAP = 0.35  # 구간 사이 쉼(초)
+
+
+def find_span(chars: list[tuple[str, float, float]], quote: str) -> tuple[float, float] | None:
+    """글자별 시간(음성 맞추기 결과)에서 quote 의 (시작초, 끝초). 띄어쓰기는 무시한다."""
+    idx = [i for i, (c, _, _) in enumerate(chars) if c.strip()]
+    flat = "".join(chars[i][0] for i in idx)
+    target = "".join(quote.split())
+    pos = flat.find(target) if target else -1
+    if pos < 0:
+        return None
+    return chars[idx[pos]][1], chars[idx[pos + len(target) - 1]][2]
+
+
+async def stitch_quotes(quotes: list[dict], wd: Path) -> tuple[Path | None, str]:
+    """인터뷰 녹음에서 고른 구간만 잘라 이어 붙인다 → (목소리 mp3, 그 목소리의 글).
+
+    구간 시간은 ElevenLabs 음성 맞추기로 찾는다. 못 찾으면 그 답 전체를 쓰고 글도 답 전체로 바꾼다.
+    30초를 넘으면 뒤 구간부터 뺀다. 녹음을 못 읽으면 목소리 없이 고른 글만 돌려준다(자막 영상)."""
+    def joined(parts: list[str]) -> str:
+        return " ".join(t if t[-1] in ".!?~" else f"{t}." for t in parts if t)
+
+    text = joined([q["text"] for q in quotes])
+    mp3s: dict[str, Path | None] = {}
+    aligned: dict[str, list | None] = {}
+    segments: list[tuple[Path, float, float, str]] = []
+    for q in quotes:
+        src = q.get("audio_path")
+        if not src or not Path(src).exists():
+            continue
+        if src not in mp3s:
+            mp3s[src] = await to_mp3(Path(src), wd / f"turn_{len(mp3s)}.mp3")
+            aligned[src] = await align(mp3s[src], q["transcript"]) if mp3s[src] else None
+        mp3 = mp3s[src]
+        if not mp3:
+            continue
+        span = find_span(aligned[src], q["text"]) if aligned[src] else None
+        if span:
+            segments.append((mp3, max(span[0] - 0.12, 0.0), span[1] + 0.25, q["text"]))
+        elif not any(s[0] == mp3 for s in segments):  # 답 전체는 한 번만
+            segments.append((mp3, 0.0, await media_seconds(mp3) or 0.0, q["transcript"]))
+    while len(segments) > 1 and sum(e - s for _, s, e, _ in segments) + QUOTE_GAP * (len(segments) - 1) > MAX_SECONDS:
+        segments.pop()
+    if segments and segments[0][2] - segments[0][1] > MAX_SECONDS:  # 답 하나가 30초를 넘으면 앞 30초만
+        mp3, start, end, said = segments[0]
+        keep = MAX_SECONDS / (end - start)
+        segments[0] = (mp3, start, start + MAX_SECONDS, said[: int(len(said) * keep)].rsplit(" ", 1)[0] or said)
+    if not segments:
+        return None, text
+    args = ["-loglevel", "error"]
+    for mp3, start, end, _ in segments:
+        args += ["-ss", f"{start:.2f}", "-to", f"{end:.2f}", "-i", str(mp3.resolve())]
+    n = len(segments)
+    pads = "".join(f"[{i}:a]apad=pad_dur={QUOTE_GAP if i < n - 1 else 0}[a{i}];" for i in range(n))
+    out = wd / "voice_ko.mp3"
+    try:
+        await _ffmpeg(
+            [*args, "-filter_complex", pads + "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[a]",
+             "-map", "[a]", "-ac", "1", "-ar", "44100", "-b:a", "128k", str(out.resolve())],
+            60,
+        )  # fmt: skip
+    except RuntimeError:
+        return None, text
+    return out, joined([seg[3] for seg in segments])
 
 
 # ---------- 시작 제목·끝 정보 카드 ----------
@@ -367,12 +460,45 @@ def script_context(db, store: Store, menu: Menu | None, transcript: str, langs: 
     return ctx
 
 
+def _where(e: BaseException) -> str:
+    """로그용 실패 위치 (파일:줄). 예외 메시지에는 외부 API 응답이 섞일 수 있어 남기지 않는다."""
+    tb = traceback.extract_tb(e.__traceback__)
+    return f"{Path(tb[-1].filename).name}:{tb[-1].lineno}" if tb else "?"
+
+
+async def _optional(what: str, video_id: int, coro, default=None):
+    """없어도 영상은 만들 수 있는 단계. 실패하면 로그만 남기고 대체값으로 이어 간다."""
+    try:
+        return await coro
+    except Exception as e:
+        logger.warning("%s 실패, 대체해서 이어 갑니다 video_id=%s: %s at %s", what, video_id, type(e).__name__, _where(e))
+        return default
+
+
+async def render_any(photos: list[Path], out: Path, duration: float, video_id: int, lang: str, **kw) -> bool:
+    """render 를 점점 가벼운 설정으로 다시 시도한다: 그대로 → 전환 효과 없이 → 자막 굽기 없이(VTT 는 남는다) → 소리 없이."""
+    attempts = [
+        kw,
+        {**kw, "background": None, "simple": True},
+        {**kw, "background": None, "subtitles_ass": None, "simple": True},
+        {"simple": True},
+    ]
+    for i, attempt in enumerate(attempts):
+        try:
+            await render(photos, out, duration, **attempt)
+            return True
+        except Exception as e:
+            logger.warning("렌더링 실패 (%d/%d) video_id=%s lang=%s: %s", i + 1, len(attempts), video_id, lang, type(e).__name__)
+    return False
+
+
 async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
-    """BackgroundTasks 로 실행. 입력은 work_dir(video_id) 에 photo_*.jpg, (선택) script.txt, audio.* 로 있다."""
+    """BackgroundTasks 로 실행. 입력은 work_dir(video_id) 에 photo_*.jpg, (선택) script.txt, audio.*, interview.json 로 있다."""
     async with _render_lock:
         db = SessionLocal()
         wd = work_dir(video_id)
         media = get_settings().media_path
+        stage = "준비"
         try:
             video = db.get(Video, video_id)
             video.job_status, video.progress = "processing", 5
@@ -381,60 +507,64 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             photos = sorted(wd.glob("photo_*.jpg"))
             audio = next(iter(sorted(wd.glob("audio.*"))), None)
             script_file = wd / "script.txt"
-            # 자막 원문: 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보.
+            interview_file = wd / "interview.json"
+            # 자막 원문: 이야기 인터뷰 구간 → 직접 쓴 스크립트 → 녹음 STT → (없으면) 가게 기본 정보.
+            stage = "녹음 읽기"
             merchant_text = script_file.read_text(encoding="utf-8").strip() if script_file.exists() else ""
             source = "script" if merchant_text else "auto"
-            # 녹음은 소리로도 쓴다. 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다.
-            voice_ko = await to_mp3(audio, wd / "voice_ko.mp3") if audio and not merchant_text else None
-            if not merchant_text and audio:
-                try:
-                    merchant_text = await asyncio.wait_for(
-                        ai.transcribe(llm, audio.read_bytes(), audio.name, "story"), STT_BUDGET
-                    )
-                    source = "stt" if merchant_text else "auto"
-                except (AppError, TimeoutError):
-                    pass  # 가게 정보로 만든다
+            voice_ko = None
+            if interview_file.exists():
+                quotes = json.loads(interview_file.read_text(encoding="utf-8"))["quotes"]
+                said = " ".join(q["text"] for q in quotes)
+                voice_ko, merchant_text = await _optional("원음 이어 붙이기", video_id, stitch_quotes(quotes, wd), (None, said))
+                merchant_text = merchant_text or said
+                source = "interview" if merchant_text else "auto"
+            elif not merchant_text and audio:
+                # 녹음은 소리로도 쓴다. 못 읽는 녹음이면 자막에만 쓰고 소리 없는 영상으로 만든다.
+                voice_ko = await _optional("녹음 변환", video_id, to_mp3(audio, wd / "voice_ko.mp3"))
+                stt = asyncio.wait_for(ai.transcribe(llm, audio.read_bytes(), audio.name, "story"), STT_BUDGET)
+                merchant_text = await _optional("음성 인식", video_id, stt, "")
+                source = "stt" if merchant_text else "auto"
                 # 소리로 쓰면 실제 녹음 길이로, 자막에만 쓰면 자막 줄 수로 30초를 넘는지 본다
                 if voice_ko:
-                    if (await media_seconds(voice_ko) or 0) > MAX_SECONDS + 1:
+                    if (await _optional("녹음 길이", video_id, media_seconds(voice_ko), 0) or 0) > MAX_SECONDS + 1:
                         raise RecordingTooLong
                 elif source == "stt" and len(ai.split_script(merchant_text, limit=None)) > ai.MAX_SCRIPT_LINES:
                     raise RecordingTooLong
-            if source != "stt":
+            if source not in ("stt", "interview"):
                 voice_ko = None
+
+            stage = "자막 만들기"
             store = db.get(Store, video.store_id)
             menu = db.get(Menu, video.menu_id) if video.menu_id else None
             ctx = script_context(db, store, menu, merchant_text, langs)
-            try:
-                if merchant_text:
-                    # 목소리로 쓰는 녹음은 말한 내용을 끝까지 자막·더빙에 담는다 (줄 수로 자르지 않는다)
-                    limit = None if voice_ko else ai.MAX_SCRIPT_LINES
-                    script = await asyncio.wait_for(ai.merchant_script(llm, merchant_text, langs, limit), SCRIPT_BUDGET)
-                else:
-                    script = await asyncio.wait_for(ai.video_script(llm, ctx, langs), SCRIPT_BUDGET)
-            except TimeoutError:
-                logger.warning("자막 생성 시간 초과, 대체 문장 사용 video_id=%s", video_id)
-                script = (
-                    ai.merchant_script_fallback(merchant_text, langs, None if voice_ko else ai.MAX_SCRIPT_LINES)
-                    if merchant_text
-                    else ai.fallback_script(ctx, langs)
-                )
+            # 목소리로 쓰는 녹음은 말한 내용을 끝까지 자막·더빙에 담는다 (줄 수로 자르지 않는다)
+            limit = None if voice_ko else ai.MAX_SCRIPT_LINES
+            make = ai.merchant_script(llm, merchant_text, langs, limit) if merchant_text else ai.video_script(llm, ctx, langs)
+            script = await _optional("자막 생성", video_id, asyncio.wait_for(make, SCRIPT_BUDGET))
+            if not script or not script.get("ko"):
+                script = ai.merchant_script_fallback(merchant_text, langs, limit) if merchant_text else ai.fallback_script(ctx, langs)
             video.progress = 20
             db.commit()
 
+            stage = "더빙"
             all_langs = ["ko", *[lang for lang in langs if lang != "ko"]]
+            voices = {lang: (voice_ko, "original") if voice_ko else (None, "none") for lang in all_langs}
             if voice_ko:
-                voices = await dub(llm, script, all_langs[1:], voice_ko, wd)
+                voices.update(await _optional("더빙", video_id, dub(llm, script, all_langs[1:], voice_ko, wd), {}))
             else:
-                voices = {lang: (None, "none") for lang in all_langs}
+                voices.update(await _optional("내레이션", video_id, narrate(llm, script, all_langs, wd), {}))
             video.progress = 35
             db.commit()
+
+            stage = "자막 시간 맞추기"
 
             async def timing(lang: str):
                 voice, engine = voices[lang]
                 # 원래 목소리에 번역 자막을 붙인 언어는 말과 글이 달라 시간을 맞출 수 없다
                 if voice and (lang == "ko" or engine != "original"):
-                    return await align(voice, _spoken(script[lang], lang))
+                    text = _spoken(script.get(lang) or script["ko"], lang)
+                    return await _optional("자막 시간 맞추기", video_id, align(voice, text))
                 return None
 
             alignments = await asyncio.gather(*(timing(lang) for lang in all_langs))
@@ -443,13 +573,15 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
             videos, sounds, subs = {}, {}, {}
             duration = 0.0
             for i, (lang, alignment) in enumerate(zip(all_langs, alignments)):
+                stage = f"렌더링 {lang}"
                 voice, engine = voices[lang]
                 lines = script.get(lang) or script["ko"]
-                if voice:
-                    spoken = await media_seconds(voice) or video_duration(len(lines))
+                spoken = await _optional("음성 길이", video_id, media_seconds(voice)) if voice else None
+                if voice and spoken:
                     length = max(spoken + TAIL_SECONDS, MIN_SECONDS)
                     cues = subtitles.build_cues(_spoken(lines, lang), lang, spoken, alignment)
-                else:
+                else:  # 소리를 못 읽으면 소리 없는 영상
+                    voice, engine = None, "none"
                     length = video_duration(len(script["ko"]))
                     step = length / max(len(lines), 1)
                     cues = [subtitles.Cue(k * step, (k + 1) * step - 0.05, line) for k, line in enumerate(lines)]
@@ -459,8 +591,12 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                 ass.write_text(subtitles.to_ass(cues, font, length, title, card), encoding="utf-8")
 
                 rel = f"videos/{video_id}.{lang}.mp4"
-                background = voices["ko"][0] if engine == "ai" else None
-                await render(photos, media / rel, length, voice=voice, background=background, subtitles_ass=ass)
+                background = voice_ko if engine == "ai" and voice_ko else None  # AI 더빙 뒤에 작게 까는 사장님 원래 목소리
+                ok = await render_any(photos, media / rel, length, video_id, lang, voice=voice, background=background, subtitles_ass=ass)
+                if not ok:
+                    if lang == "ko":
+                        raise RuntimeError("렌더링 실패")
+                    rel, engine = videos["ko"], sounds["ko"]  # 이 언어는 한국어 영상 + 그 언어 자막 파일로 대신한다
                 vtt = f"subs/{video_id}.{lang}.vtt"
                 (media / vtt).parent.mkdir(parents=True, exist_ok=True)
                 (media / vtt).write_text(subtitles.to_vtt(cues), encoding="utf-8")
@@ -470,16 +606,22 @@ async def run_job(video_id: int, langs: list[str], llm: LLMProvider) -> None:
                 video.progress = 35 + int((i + 1) / len(all_langs) * 60)
                 db.commit()
 
-            make_thumbnail(photos[0], media / "thumbs" / f"{video_id}.jpg")
+            stage = "마무리"
+            thumb = f"thumbs/{video_id}.jpg"
+            try:
+                make_thumbnail(photos[0], media / thumb)
+            except Exception as e:
+                logger.warning("썸네일 실패 video_id=%s: %s", video_id, type(e).__name__)
+                thumb = None
             video.video_path = videos["ko"]
             video.videos, video.voices = videos, sounds
-            video.thumbnail_path = f"thumbs/{video_id}.jpg"
+            video.thumbnail_path = thumb
             video.subtitles, video.script, video.duration = subs, script, duration
             video.script_source = source
             video.job_status, video.progress = "done", 100
             db.commit()
         except Exception as e:
-            logger.warning("영상 생성 실패 video_id=%s: %s", video_id, type(e).__name__)
+            logger.warning("영상 생성 실패 video_id=%s 단계=%s: %s at %s", video_id, stage, type(e).__name__, _where(e))
             db.rollback()
             video = db.get(Video, video_id)
             if video:

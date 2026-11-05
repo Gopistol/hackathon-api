@@ -64,7 +64,19 @@ def audio_ext(data: bytes) -> str:
     return "webm"
 
 
-async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str) -> str:
+# 조용하거나 시끄러운 녹음에서 음성 인식 모델이 지어내는 말 (방송 자막 학습 탓). 이것만 들리면 못 들은 것으로 본다.
+_STT_HALLUCINATIONS = re.compile(
+    r"시청(해\s*주셔서|해주셔서)\s*감사합니다|구독(과|이랑)?\s*좋아요|좋아요(와|랑)?\s*구독|다음\s*영상에서\s*(만나요|뵙겠습니다)"
+    r"|자막\s*(제공|by)|MBC\s*뉴스|KBS\s*뉴스|SBS\s*뉴스|[가-힣]+\s*뉴스\s*[가-힣]+입니다|^\W*(음+|어+|아+)?\W*$"
+)
+
+
+def drop_stt_hallucinations(text: str) -> str:
+    return "" if _STT_HALLUCINATIONS.search(text) and len(text) < 40 else text
+
+
+async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str, hint: str | None = None) -> str:
+    """hint: 가게 이름·메뉴 같은 낱말 (고유명사 인식을 돕는다)."""
     if is_mock(llm):
         return MOCK_TRANSCRIPTS[step]
     fn = getattr(llm, "transcribe", None)
@@ -72,9 +84,13 @@ async def transcribe(llm: LLMProvider, audio: bytes, filename: str, step: str) -
         raise AppError("STT_FAILED", "지금 설정에서는 음성 인식을 쓸 수 없어요. 글로 입력해 주세요.", 503)
     try:
         # 받은 파일 이름 대신 내용에 맞는 확장자를 붙여 보낸다.
-        text = (await fn(audio, f"audio.{audio_ext(audio)}")).strip()
+        name = f"audio.{audio_ext(audio)}"
+        text = (await (fn(audio, name, prompt=hint) if hint else fn(audio, name))).strip()
     except LLMError as e:
         raise AppError("STT_FAILED", "음성을 알아듣지 못했어요. 다시 말하거나 글로 입력해 주세요.", 502) from e
+    if hint and text.strip(" .") == hint.strip(" ."):  # 소리가 없으면 힌트를 그대로 돌려줄 때가 있다
+        text = ""
+    text = drop_stt_hallucinations(text)
     if not text:
         raise AppError("STT_FAILED", "음성이 들리지 않았어요. 다시 말하거나 글로 입력해 주세요.", 422)
     return text

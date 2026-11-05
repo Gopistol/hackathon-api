@@ -4,6 +4,7 @@
 원본 에러 본문에는 계정 정보가 섞일 수 있어 응답·로그에는 상태 코드만 남긴다.
 """
 
+import asyncio
 import logging
 import uuid
 
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 API = "https://api.elevenlabs.io/v1"
 TIMEOUT = 30.0
+
+
+# Starter 요금제는 동시 요청이 3개까지다. 넘으면 429 가 나서 다른 목소리(OpenAI)로 바뀌므로 줄을 세운다.
+slots = asyncio.Semaphore(3)
 
 
 class ElevenLabsError(RuntimeError):
@@ -33,7 +38,7 @@ def _client() -> httpx.AsyncClient:
 
 async def _post(action: str, path: str, **kwargs) -> httpx.Response:
     try:
-        async with _client() as client:
+        async with slots, _client() as client:
             r = await client.post(path, **kwargs)
     except httpx.HTTPError as e:
         logger.warning("ElevenLabs %s 연결 실패: %s", action, type(e).__name__)

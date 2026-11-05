@@ -37,11 +37,15 @@ class Settings(BaseSettings):
     # 목소리는 이 키의 계정 Voice Library 에 추가돼 있어야 한다. 기본값은 "Sora - Warm & Expressive".
     elevenlabs_api_key: SecretStr = SecretStr("")
     elevenlabs_tts_voice_id: str = "JpGoUJuLFthrFkcdBy4k"
-    elevenlabs_tts_model: str = "eleven_multilingual_v2"
+    # flash 는 첫 소리가 0.3초 안팎으로 빠르고, language_code=ko 로 짧은 말도 한국어로 읽는다
+    elevenlabs_tts_model: str = "eleven_flash_v2_5"
     # 숏폼 더빙: 사장님 녹음으로 목소리를 복제해 외국어로 읽힌다. 키가 없으면 OpenAI 목소리.
     elevenlabs_dub_model: str = "eleven_multilingual_v2"
+    # 녹음 없이 글(스크립트·가게 정보)로 만든 숏폼을 읽는 목소리. 기본값은 이 계정의 "영천시장 할머니".
+    elevenlabs_story_voice_id: str = "OZdqu8aErJPjEj34s1aw"
     # 영상에 넣는 자막 글꼴. 서버(Ubuntu)는 `sudo apt install fonts-noto-cjk` 후 기본값 그대로.
-    # Windows 로컬: SUBTITLE_FONT=Malgun Gothic, SUBTITLE_FONT_ZH=Microsoft YaHei, SUBTITLE_FONTS_DIR=C:/Windows/Fonts
+    # Windows 로컬: SUBTITLE_FONT=Malgun Gothic, SUBTITLE_FONT_ZH=Microsoft YaHei. fonts_dir 는 비워 둔다
+    # (폴더 안 글꼴을 전부 메모리에 올려 렌더링 하나가 1GB 를 넘는다. 꼭 필요하면 쓸 글꼴 파일만 든 폴더로)
     subtitle_font: str = "Noto Sans CJK KR"
     subtitle_font_zh: str = "Noto Sans CJK SC"
     subtitle_fonts_dir: str = ""

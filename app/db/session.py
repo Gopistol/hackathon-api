@@ -11,7 +11,8 @@ settings = get_settings()
 connect_args: dict = {}
 if settings.database_url.startswith("sqlite"):
     Path(settings.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    connect_args = {"check_same_thread": False}
+    # 영상 작업·번역 같은 백그라운드 쓰기와 겹쳐도 "database is locked" 로 실패하지 않게 기다린다
+    connect_args = {"check_same_thread": False, "timeout": 30}
 
 # MySQL 은 유휴 연결이 끊길 수 있다.
 engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)

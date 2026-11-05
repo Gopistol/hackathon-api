@@ -86,15 +86,31 @@ class OpenAIProvider:
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
 
-    async def transcribe(self, audio: bytes, filename: str) -> str:
-        """한국어 음성 → 텍스트."""
+    async def transcribe(self, audio: bytes, filename: str, prompt: str | None = None) -> str:
+        """한국어 음성 → 텍스트. prompt 는 가게 이름·메뉴 같은 낱말 힌트 (고유명사를 덜 틀리게)."""
+        extra = {"prompt": prompt} if prompt else {}
         try:
             result = await self._client.audio.transcriptions.create(
-                model=self._stt_model, file=(filename, audio), language="ko"
+                model=self._stt_model, file=(filename, audio), language="ko", **extra
             )
         except openai.OpenAIError as e:
             raise _to_llm_error(e) from e
         return result.text
+
+    async def speak_stream(self, text: str) -> AsyncIterator[bytes]:
+        """speak 와 같지만 만드는 대로 조각을 돌려준다 (등록·인터뷰 질문을 빨리 들려주기 위해)."""
+        try:
+            async with self._client.audio.speech.with_streaming_response.create(
+                model=self._tts_model,
+                voice=self._tts_voice,
+                input=text,
+                instructions="어르신께 말하듯 또박또박, 조금 천천히, 친절하고 따뜻하게 한국어로 말하세요.",
+                response_format="mp3",
+            ) as response:
+                async for chunk in response.iter_bytes():
+                    yield chunk
+        except openai.OpenAIError as e:
+            raise _to_llm_error(e) from e
 
     async def speak(self, text: str, instructions: str | None = None) -> bytes:
         """문장 → mp3. 기본은 등록 화면 질문용(어르신께 한국어로), 숏폼 더빙은 언어별 instructions 를 넘긴다."""

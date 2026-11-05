@@ -207,3 +207,40 @@ def test_missing_column_is_added_to_existing_table(tmp_path) -> None:
     finally:
         session.engine = original
     assert "script_source" in {c["name"] for c in inspect(engine).get_columns("videos")}
+
+
+def test_failed_steps_fall_back_and_video_still_renders(client, monkeypatch) -> None:
+    """더빙이 터지고 첫 렌더링(전환 효과)이 실패해도 가벼운 설정으로 다시 만들어 끝낸다."""
+    from app.services import video as video_service
+
+    async def broken_dub(*args, **kwargs):
+        raise KeyError("voice_id")
+
+    real_render = video_service.render
+
+    async def flaky_render(*args, simple=False, **kwargs):
+        if not simple:
+            raise RuntimeError("ffmpeg 실패")
+        return await real_render(*args, simple=simple, **kwargs)
+
+    monkeypatch.setattr(video_service, "dub", broken_dub)
+    monkeypatch.setattr(video_service, "render", flaky_render)
+    files = [("photos", (f"{i}.jpg", _jpeg(c), "image/jpeg")) for i, c in enumerate(["red", "green"])]
+    files.append(("audio", ("voice.mp3", _tone(6), "audio/mpeg")))
+    video = _make(client, files)
+    assert video["script_source"] == "stt" and video["voice"] == "original"
+    assert set(video["video_urls"]) == {"ko", "en", "zh"}
+
+
+def test_script_video_is_narrated_when_a_voice_is_available(client, monkeypatch) -> None:
+    """녹음 없이 스크립트만 써도 시장 할머니 목소리로 언어마다 읽는다."""
+    from app.services import video as video_service
+
+    async def fake_speak(llm, text, lang, voice_id):
+        return _tone(3), "clone"
+
+    monkeypatch.setattr(video_service, "_speak", fake_speak)
+    files = [("photos", ("0.jpg", _jpeg("red"), "image/jpeg"))]
+    video = _make(client, files, {"script": "떡볶이 한 접시 4천 원이에요. 맛있게 드세요."})
+    assert video["script_source"] == "script" and video["voice"] == "narrator"
+    assert not _silent(client, video["video_urls"]["en"])
