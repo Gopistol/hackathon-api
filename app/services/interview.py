@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 REQUIRED = ["store_name", "category", "items", "payment", "hours"]
 MAX_EXTRA = 2  # 필수 항목 다음에 묻는 업종별 질문 수
-MAX_TURNS = {"register": 12, "story": 8}
-MIN_STORY_TURNS = 3
+MAX_TURNS = {"register": 12, "story": 10}
+MIN_STORY_TURNS = 4
 MAX_ASK_PER_BEAT = 2
 MAX_ASK_PER_FIELD = 2  # 가게 등록도 한 항목은 두 번까지만 묻고, 못 들으면 요약 화면 확인 목록으로 넘긴다
 STT_BUDGET = 6.0  # 초. 음성 인식이 늦으면 브라우저가 받아 적은 글을 쓰거나 다시 묻는다 (오래 조용하지 않게)
@@ -70,8 +70,8 @@ REGISTER_QUESTIONS = {
 }
 STORY_QUESTIONS = {
     "origin": "이 장사는 언제, 어떻게 시작하셨어요?",
-    "years": "그동안 시장은 어떻게 달라졌어요?",
-    "craft": "장사하시면서 꼭 지키는 게 있으세요?",
+    "years": "처음 장사하실 때 이 시장이랑 동네는 어떤 모습이었어요?",
+    "craft": "장사하시면서 이것만은 꼭 지킨다, 하는 게 있으세요?",
     "people": "기억에 남는 손님 한 분만 얘기해 주세요.",
     "message": "마지막으로, 외국에서 온 손님들께 한마디 해 주세요.",
 }
@@ -600,6 +600,7 @@ def _store_facts(db: Session, iv: Interview) -> dict:
         "name": store.name,
         "category": store.category,
         "market": store.market.name,
+        "market_address": store.market.address,
         "items": [m.name_ko for m in store.menus][:5],
         "intro": store.story_ko[:200],
     }
@@ -643,7 +644,10 @@ async def _story_step(db: Session, llm: LLMProvider, iv: Interview, transcript: 
             covered.append(asking)
         anecdote = anecdote or len(transcript) >= 30
 
-    enough = len(iv.turns) >= MIN_STORY_TURNS and "origin" in covered and len(covered) >= 3 and anecdote
+    # 사장님 이야기(origin)와 시장·동네 이야기(years)는 꼭 듣고, 한 축 더 + 구체적인 일화 하나
+    # (두 번 물어도 안 나오면 억지로 붙잡지 않는다)
+    must = all(b in covered or asked.get(b, 0) >= MAX_ASK_PER_BEAT for b in ("origin", "years"))
+    enough = len(iv.turns) >= MIN_STORY_TURNS and must and len(covered) >= 4 and anecdote
     nxt = _next_beat(covered, asked)
     repeat = asking in STORY_BEATS and asked.get(asking, 0) >= MAX_ASK_PER_BEAT
     finish = (llm_finish and enough) or nxt is None or (repeat and enough)
