@@ -55,6 +55,15 @@ def test_full_onboarding_flow_appears_in_store_pins(client) -> None:
     assert detail["menus"][0]["how_to_eat"]
 
 
+def test_summary_has_chinese_preview(client) -> None:
+    sid = client.post(BASE).json()["session_id"]
+    _run_all_steps(client, sid)
+    summary = client.get(f"{BASE}/{sid}/summary").json()
+    zh = summary["preview_zh"]
+    assert zh is not None and "translated" in zh
+    assert set(zh) == set(summary["preview_en"])
+
+
 def test_audio_answers_in_mock_mode(client) -> None:
     sid = client.post(BASE).json()["session_id"]
     _run_all_steps(client, sid)

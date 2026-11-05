@@ -178,30 +178,33 @@ async def _wait_prefetch(db: Session, s: OnboardingSession) -> None:
         db.refresh(s)  # 다른 세션에서 저장한 번역 캐시를 읽는다
 
 
+def _preview(s: OnboardingSession, lang: str, cached: dict | None, name: str, story: str, menus: list[dict]) -> dict | None:
+    if not name:
+        return None
+    t = cached[lang] if cached else ai.fallback_translation(name, story, menus, lang)
+    return {
+        "translated": cached is not None,  # false 면 잠시 뒤 다시 요약을 부르면 번역본
+        "name": t["store"]["name"],
+        "story": t["store"]["description"],
+        "payment": _parsed(s, "payment").get("payment", []),
+        "hours": _parsed(s, "hours").get("hours", ""),
+        "menus": [
+            {"name": t["menus"][m["id"]]["name"], "price": m["price"], "spicy_level": m["spicy_level"],
+             "description": t["menus"][m["id"]]["description"], "how_to_eat": t["menus"][m["id"]]["how_to_eat"]}
+            for m in menus
+        ],
+    }  # fmt: skip
+
+
 async def summary(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
     steps = {
         step: {k: (s.answers.get(step) or {}).get(k) for k in ("transcript", "parsed", "needs_check", "confirmed")}
         for step in ai.STEPS
     }
     needs = [n for step in ai.STEPS for n in ((s.answers.get(step) or {}).get("needs_check") or [])]
-    preview = None
     name, story, menus = _translation_input(s)
-    if name:
-        # 요약은 번역을 기다리지 않는다. 미리 해 둔 번역이 없으면 음식 용어집으로 미리보기를 만든다.
-        cached = _cached_translations(s)
-        en = cached["en"] if cached else ai.fallback_translation(name, story, menus, "en")
-        preview = {
-            "translated": cached is not None,  # false 면 잠시 뒤 다시 요약을 부르면 번역본
-            "name": en["store"]["name"],
-            "story": en["store"]["description"],
-            "payment": _parsed(s, "payment").get("payment", []),
-            "hours": _parsed(s, "hours").get("hours", ""),
-            "menus": [
-                {"name": en["menus"][m["id"]]["name"], "price": m["price"], "spicy_level": m["spicy_level"],
-                 "description": en["menus"][m["id"]]["description"], "how_to_eat": en["menus"][m["id"]]["how_to_eat"]}
-                for m in menus
-            ],
-        }  # fmt: skip
+    # 요약은 번역을 기다리지 않는다. 미리 해 둔 번역이 없으면 음식 용어집으로 미리보기를 만든다.
+    cached = _cached_translations(s) if name else None
     return {
         "session_id": s.id,
         "step": s.step,
@@ -209,7 +212,8 @@ async def summary(db: Session, llm: LLMProvider, s: OnboardingSession) -> dict:
         "store_id": s.store_id,
         "steps": steps,
         "needs_check": needs,
-        "preview_en": preview,
+        "preview_en": _preview(s, "en", cached, name, story, menus),
+        "preview_zh": _preview(s, "zh", cached, name, story, menus),
         "mode": llm.name,
     }
 
